@@ -1,0 +1,13 @@
+*~
+gh-pages/
+.cache/
+/bin
+/bundle
+/bundle_tmp*
+/bundle.Dockerfile
+/charts
+/.cr-release-packages
+.vscode/
+__pycache__
+/site
+venv/*
