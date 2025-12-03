@@ -6,33 +6,31 @@
 
   tasks:
 
-    - name: Install required packages
+    - name: Get required packages
       ansible.builtin.dnf:
         name:
           - yum-utils
-        state: present
 
     - name: Add HashiCorp repository
       ansible.builtin.yum_repository:
         name: hashicorp
-        description: "HashiCorp Stable - RHEL 9 - x86_64"
-        baseurl: "https://rpm.releases.hashicorp.com/RHEL/9/x86_64/stable"
+        description: "HashiCorp Stable - $basearch"
+        baseurl: "https://rpm.releases.hashicorp.com/RHEL/$releasever/$basearch/stable"
         gpgkey: "https://rpm.releases.hashicorp.com/gpg"
-        gpgcheck: yes
-        enabled: yes
+        gpgcheck: true
+        enabled: true
+        state: present
 
-    - name: Clean DNF metadata
-      ansible.builtin.command: dnf clean all
+    - name: Install vault
+      ansible.builtin.yum:
+        name:
+          - vault
 
-    - name: Install Vault
-      ansible.builtin.dnf:
-        name: vault
-        state: latest
-
-    - name: Verify Vault installation
-      ansible.builtin.command: vault --version
+    - name: Verify vault installation
+      ansible.builtin.command:
+        cmd: vault --version
       register: vault_version
 
-    - name: Print Vault version
+    - name: Print vault version
       ansible.builtin.debug:
         msg: "Vault version: {{ vault_version.stdout }}"
