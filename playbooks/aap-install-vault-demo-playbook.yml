@@ -11,16 +11,15 @@
         name:
           - yum-utils
 
-    - name: Add HashiCorp repository
+   - name: Add HashiCorp repository (Debug)
       ansible.builtin.yum_repository:
         name: hashicorp
-        description: "HashiCorp Stable - $basearch"
-        baseurl: "https://rpm.releases.hashicorp.com/RHEL/$releasever/$basearch/stable"
+        description: "HashiCorp Stable - x86_64"
+        baseurl: "https://rpm.releases.hashicorp.com/RHEL/8/x86_64/stable"
         gpgkey: "https://rpm.releases.hashicorp.com/gpg"
         gpgcheck: true
         enabled: true
         state: present
-
     - name: Install vault
       ansible.builtin.yum:
         name:
