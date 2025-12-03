@@ -5,35 +5,36 @@
   gather_facts: yes
 
   vars:
-    vault_version: "1.18.3"
-    vault_rpm_url: "https://releases.hashicorp.com/vault/{{ vault_version }}/vault-{{ vault_version }}-1.x86_64.rpm"
+    rhel_major_version: "{{ ansible_distribution_major_version }}"
 
   tasks:
 
-    - name: Download Vault RPM directly
-      ansible.builtin.get_url:
-        url: "{{ vault_rpm_url }}"
-        dest: "/tmp/vault-{{ vault_version }}.rpm"
-        mode: '0644'
-      register: vault_download
-
-    - name: Install Vault from RPM
+    - name: Install required packages
       ansible.builtin.dnf:
-        name: "/tmp/vault-{{ vault_version }}.rpm"
+        name:
+          - yum-utils
         state: present
-        disable_gpg_check: no
+
+    - name: Add HashiCorp YUM repository
+      ansible.builtin.yum_repository:
+        name: hashicorp
+        description: "HashiCorp Stable - $basearch"
+        baseurl: "https://rpm.releases.hashicorp.com/RHEL/{{ rhel_major_version }}/$basearch/stable"
+        gpgkey: "https://rpm.releases.hashicorp.com/gpg"
+        gpgcheck: true
+        enabled: true
+        state: present
+
+    - name: Install Vault
+      ansible.builtin.dnf:
+        name: vault
+        state: present
 
     - name: Verify vault installation
-      ansible.builtin.command:
-        cmd: vault --version
-      register: vault_version_output
+      ansible.builtin.command: vault --version
+      register: vault_version
       changed_when: false
 
-    - name: Print vault version
+    - name: Show Vault version
       ansible.builtin.debug:
-        msg: "Vault version: {{ vault_version_output.stdout }}"
-
-    - name: Clean up downloaded RPM
-      ansible.builtin.file:
-        path: "/tmp/vault-{{ vault_version }}.rpm"
-        state: absent
+        msg: "Vault version installed: {{ vault_version.stdout }}"
