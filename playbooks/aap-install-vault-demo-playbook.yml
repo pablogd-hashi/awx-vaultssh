@@ -1,6 +1,7 @@
 ---
 - name: Install HashiCorp Vault on RHEL
   hosts: all
+  remote_user: rhel
   become: yes
   gather_facts: yes
 
