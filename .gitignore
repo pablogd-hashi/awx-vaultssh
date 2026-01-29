@@ -1,0 +1,51 @@
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform/
+.terraform.lock.hcl
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Vault secrets (NEVER commit these)
+init.json
+role-id.txt
+role-id.json
+secret-id.txt
+secret-id.json
+*.pem
+*.key
+mypkey
+mypkey-cert.pub
+ssh-keys.json
+trusted-user-ca-keys.pem
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+
+# Ansible
+*.retry
+
+# Logs
+*.log
