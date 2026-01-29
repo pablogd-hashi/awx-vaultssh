@@ -1,0 +1,52 @@
+# -----------------------------------------------------------------------------
+# GCP Configuration
+# -----------------------------------------------------------------------------
+
+project_id = "your-gcp-project-id"
+region     = "us-central1"
+zone       = "us-central1-a"
+
+# -----------------------------------------------------------------------------
+# Vault Configuration
+# -----------------------------------------------------------------------------
+
+vault_addr     = "https://vault.example.com:8200"
+vault_ssh_path = "ssh-client-signer"
+vault_ssh_role = "awx-role"
+
+# -----------------------------------------------------------------------------
+# AAP Configuration
+# -----------------------------------------------------------------------------
+
+aap_host            = "https://aap.example.com"
+aap_token           = "your-aap-api-token"  # Consider using env var: TF_VAR_aap_token
+aap_job_template_id = 42                     # ID of your job template
+aap_organization_id = 1
+
+# -----------------------------------------------------------------------------
+# VM Configuration
+# -----------------------------------------------------------------------------
+
+vm_name      = "vault-ssh-demo"
+machine_type = "e2-medium"
+ssh_user     = "rhel"
+os_image     = "rhel-cloud/rhel-9"
+
+# -----------------------------------------------------------------------------
+# Network Configuration
+# -----------------------------------------------------------------------------
+
+network_name = "vault-ssh-demo-network"
+subnet_cidr  = "10.0.1.0/24"
+
+# IMPORTANT: Restrict this in production!
+allowed_ssh_ranges = [
+  "YOUR_AAP_CONTROLLER_IP/32",  # AAP controller IP
+  "YOUR_OFFICE_IP/32",          # Your office IP for debugging
+]
+
+# -----------------------------------------------------------------------------
+# Application Configuration
+# -----------------------------------------------------------------------------
+
+streamlit_port = 8501

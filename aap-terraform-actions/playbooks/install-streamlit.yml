@@ -1,0 +1,257 @@
+---
+# -----------------------------------------------------------------------------
+# Install Streamlit Demo Application
+#
+# This playbook is triggered by Terraform Actions after VM provisioning.
+# It installs and configures a simple Streamlit application to demonstrate
+# that the Vault SSH CA integration is working.
+#
+# Variables passed from Terraform:
+#   - target_host: IP address of the VM
+#   - ssh_user: Username for SSH connection
+#   - streamlit_port: Port for the Streamlit app
+#   - deployment_id: VM instance ID
+#   - created_by: Deployment method (terraform-actions)
+#   - environment: Deployment environment
+# -----------------------------------------------------------------------------
+
+- name: Install Streamlit Demo Application
+  hosts: "{{ target_host | default('all') }}"
+  remote_user: "{{ ssh_user | default('rhel') }}"
+  become: yes
+  gather_facts: yes
+
+  vars:
+    streamlit_port: "{{ streamlit_port | default(8501) }}"
+    app_dir: /opt/streamlit-demo
+    venv_dir: "{{ app_dir }}/venv"
+
+  tasks:
+    - name: Display deployment information
+      ansible.builtin.debug:
+        msg:
+          - "Target Host: {{ ansible_host }}"
+          - "SSH User: {{ ansible_user }}"
+          - "Deployment ID: {{ deployment_id | default('N/A') }}"
+          - "Created By: {{ created_by | default('N/A') }}"
+          - "Environment: {{ environment | default('N/A') }}"
+
+    # -------------------------------------------------------------------------
+    # Install System Dependencies
+    # -------------------------------------------------------------------------
+
+    - name: Install required packages (RHEL/Fedora)
+      ansible.builtin.dnf:
+        name:
+          - python3
+          - python3-pip
+          - python3-devel
+          - gcc
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Install required packages (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-venv
+          - python3-dev
+          - build-essential
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    # -------------------------------------------------------------------------
+    # Create Application Directory
+    # -------------------------------------------------------------------------
+
+    - name: Create application directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ ssh_user }}"
+        group: "{{ ssh_user }}"
+        mode: '0755'
+
+    # -------------------------------------------------------------------------
+    # Create Python Virtual Environment
+    # -------------------------------------------------------------------------
+
+    - name: Create Python virtual environment
+      ansible.builtin.command:
+        cmd: python3 -m venv {{ venv_dir }}
+        creates: "{{ venv_dir }}/bin/activate"
+
+    - name: Install Streamlit in virtual environment
+      ansible.builtin.pip:
+        name:
+          - streamlit
+          - pandas
+          - plotly
+        virtualenv: "{{ venv_dir }}"
+        state: present
+
+    # -------------------------------------------------------------------------
+    # Create Demo Application
+    # -------------------------------------------------------------------------
+
+    - name: Create Streamlit demo application
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/app.py"
+        owner: "{{ ssh_user }}"
+        group: "{{ ssh_user }}"
+        mode: '0644'
+        content: |
+          """
+          Vault SSH CA Demo Application
+
+          This application was automatically deployed using:
+          - Terraform Actions (infrastructure provisioning)
+          - Ansible Automation Platform (configuration management)
+          - HashiCorp Vault (SSH certificate authentication)
+
+          Deployment Info:
+          - Deployment ID: {{ deployment_id | default('N/A') }}
+          - Environment: {{ environment | default('demo') }}
+          - Deployed By: {{ created_by | default('terraform-actions') }}
+          """
+
+          import streamlit as st
+          import socket
+          import os
+          from datetime import datetime
+
+          st.set_page_config(
+              page_title="Vault SSH CA Demo",
+              page_icon="🔐",
+              layout="wide"
+          )
+
+          st.title("🔐 Vault SSH CA Demo")
+          st.markdown("---")
+
+          # Deployment Information
+          st.header("📋 Deployment Information")
+          col1, col2, col3 = st.columns(3)
+
+          with col1:
+              st.metric("Hostname", socket.gethostname())
+          with col2:
+              st.metric("Deployment ID", "{{ deployment_id | default('N/A') }}")
+          with col3:
+              st.metric("Environment", "{{ environment | default('demo') }}")
+
+          st.markdown("---")
+
+          # Architecture Overview
+          st.header("🏗️ Architecture")
+          st.markdown("""
+          This demo showcases the integration of:
+
+          1. **Terraform** - Provisioned the VM in GCP
+          2. **Terraform Actions** - Triggered AAP after VM creation
+          3. **Ansible Automation Platform** - Configured this application
+          4. **HashiCorp Vault** - Provided SSH certificate authentication
+
+          ### How It Works
+
+          ```
+          Terraform → Create VM → Trigger Action → AAP Job →
+          Vault (get SSH cert) → SSH to VM → Install Streamlit
+          ```
+          """)
+
+          st.markdown("---")
+
+          # System Information
+          st.header("💻 System Information")
+          col1, col2 = st.columns(2)
+
+          with col1:
+              st.subheader("OS Details")
+              st.code(f"""
+          Hostname: {socket.gethostname()}
+          IP Address: {socket.gethostbyname(socket.gethostname())}
+          Current Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+          Python Version: {os.popen('python3 --version').read().strip()}
+              """)
+
+          with col2:
+              st.subheader("Deployment Details")
+              st.code("""
+          Deployed By: {{ created_by | default('terraform-actions') }}
+          Deployment ID: {{ deployment_id | default('N/A') }}
+          Environment: {{ environment | default('demo') }}
+          SSH User: {{ ssh_user | default('rhel') }}
+              """)
+
+          st.markdown("---")
+
+          # Success Message
+          st.success("✅ The Vault SSH CA integration is working correctly!")
+          st.balloons()
+
+    # -------------------------------------------------------------------------
+    # Create Systemd Service
+    # -------------------------------------------------------------------------
+
+    - name: Create systemd service file
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/streamlit-demo.service
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Streamlit Demo Application
+          After=network.target
+
+          [Service]
+          Type=simple
+          User={{ ssh_user }}
+          WorkingDirectory={{ app_dir }}
+          ExecStart={{ venv_dir }}/bin/streamlit run app.py --server.port={{ streamlit_port }} --server.address=0.0.0.0
+          Restart=always
+          RestartSec=10
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: yes
+
+    - name: Start and enable Streamlit service
+      ansible.builtin.systemd:
+        name: streamlit-demo
+        state: started
+        enabled: yes
+
+    # -------------------------------------------------------------------------
+    # Firewall Configuration
+    # -------------------------------------------------------------------------
+
+    - name: Configure firewall (RHEL/Fedora)
+      ansible.posix.firewalld:
+        port: "{{ streamlit_port }}/tcp"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes  # firewalld might not be running
+
+    # -------------------------------------------------------------------------
+    # Verification
+    # -------------------------------------------------------------------------
+
+    - name: Wait for Streamlit to start
+      ansible.builtin.wait_for:
+        port: "{{ streamlit_port }}"
+        delay: 5
+        timeout: 60
+
+    - name: Display success message
+      ansible.builtin.debug:
+        msg:
+          - "✅ Streamlit demo application deployed successfully!"
+          - "🌐 Access the application at: http://{{ ansible_host }}:{{ streamlit_port }}"
+          - "📋 Deployment ID: {{ deployment_id | default('N/A') }}"
