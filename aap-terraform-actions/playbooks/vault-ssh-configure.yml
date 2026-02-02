@@ -1,104 +1,114 @@
 ---
 # Vault SSH CA Demo - Ephemeral Key Playbook
 #
-# This playbook:
-# 1. Gets ephemeral SSH keys from Vault using /issue/ endpoint
-# 2. SSHs to target VM using those keys
-# 3. Installs a demo application
+# Triggered by Terraform via the AAP provider after VM creation.
+# Uses Vault SSH CA for ephemeral SSH credentials — no static keys stored.
 #
-# Required variables (passed by Terraform):
-#   - target_hosts: IP address of target VM
-#   - vault_addr: Vault server URL
-#   - vault_ssh_role: Vault SSH signing role
-#   - ssh_user: SSH username for target
+# Three-play structure:
+#   Play 1 (localhost) - Authenticate to Vault, issue SSH keys for each target
+#   Play 2 (target)    - SSH into VMs using Vault creds, configure VM
+#   Play 3 (localhost) - Shred ephemeral SSH credentials
 #
-# Injected by AAP Vault Secret Lookup credential:
-#   - vault_approle_role_id
-#   - vault_approle_secret_id
+# Variable sources:
+#   From Terraform extra_vars:
+#     - target_hosts            VM IP address (or comma-separated IPs)
+#     - ssh_user                SSH username (default: rhel)
+#     - vault_addr              Vault server URL
+#     - vault_ssh_path          Vault SSH engine path (default: ssh)
+#     - vault_ssh_role          Vault SSH CA role name
+#
+#   From AAP Vault credential lookup (injected by Job Template):
+#     - vault_approle_role_id   AppRole role ID
+#     - vault_approle_secret_id AppRole secret ID
+#
+# Prerequisites:
+#   - Vault SSH CA enabled (vault secrets enable ssh)
+#   - Vault SSH role created (vault write ssh/roles/<name> ...)
+#   - Vault AppRole configured with policy allowing ssh/issue/*
+#   - AAP Job Template has Vault credential lookup attached
+#   - VM startup script trusts the Vault CA public key (done by Terraform)
+
+# ---------------------------------------------------------------------------
+# Play 1: Obtain ephemeral SSH credentials from Vault for each target
+# ---------------------------------------------------------------------------
+# Runs on localhost (AAP execution environment). Authenticates to Vault using
+# AppRole, then calls POST /ssh/issue/:role to get a private key and a
+# signed certificate for each target host.
 
 - name: Obtain SSH credentials from Vault
   hosts: localhost
-  gather_facts: no
+  gather_facts: false
+  connection: local
+
   vars:
-    vault_namespace: "admin"  # For HCP Vault
+    # Parse comma-separated target_hosts into a list (handles single IP too)
+    _target_list: "{{ target_hosts.split(',') | map('trim') | list }}"
+    # HCP Vault namespace (leave empty for OSS Vault)
+    vault_namespace: "admin"
 
   tasks:
     - name: Validate required variables
       ansible.builtin.assert:
         that:
           - target_hosts is defined
+          - target_hosts | length > 0
           - vault_addr is defined
-          - vault_ssh_role is defined
           - vault_approle_role_id is defined
           - vault_approle_secret_id is defined
-        fail_msg: "Missing required variables. Ensure Terraform passes target_hosts, vault_addr, vault_ssh_role via extra_vars, and AAP injects vault_approle_role_id + vault_approle_secret_id via credential lookup."
+          - vault_ssh_role is defined
+        fail_msg: >-
+          Missing required variables. Ensure Terraform passes target_hosts,
+          vault_addr, vault_ssh_role via extra_vars, and AAP injects
+          vault_approle_role_id + vault_approle_secret_id via credential lookup.
 
-    - name: Authenticate to Vault using AppRole
+    # Build Vault headers. X-Vault-Namespace is required for HCP/Enterprise;
+    # omitted (empty) for OSS Vault, which ignores unknown headers.
+    - name: Set Vault namespace header
+      ansible.builtin.set_fact:
+        _vault_headers: "{{ {'X-Vault-Namespace': vault_namespace} if vault_namespace | default('') | length > 0 else {} }}"
+
+    # Step 1: Exchange AppRole role_id + secret_id for a Vault client token.
+    # The token is short-lived and scoped to the policy attached to the AppRole.
+    - name: Authenticate to Vault via AppRole
       ansible.builtin.uri:
         url: "{{ vault_addr }}/v1/auth/approle/login"
         method: POST
-        headers:
-          X-Vault-Namespace: "{{ vault_namespace | default(omit) }}"
+        headers: "{{ _vault_headers }}"
         body_format: json
         body:
           role_id: "{{ vault_approle_role_id }}"
           secret_id: "{{ vault_approle_secret_id }}"
         status_code: 200
-      register: vault_auth
+      register: vault_login
       no_log: true
 
-    - name: Get ephemeral SSH credentials from Vault
-      ansible.builtin.uri:
-        url: "{{ vault_addr }}/v1/{{ vault_ssh_path | default('ssh') }}/issue/{{ vault_ssh_role }}"
-        method: POST
-        headers:
-          X-Vault-Token: "{{ vault_auth.json.auth.client_token }}"
-          X-Vault-Namespace: "{{ vault_namespace | default(omit) }}"
-        body_format: json
-        body:
-          valid_principals: "{{ ssh_user | default('rhel') }}"
-        status_code: 200
-      register: vault_ssh_creds
-      no_log: true
+    # Step 2: Issue SSH credentials for each target host
+    - name: Issue SSH credentials for each target
+      include_tasks: issue_ssh_creds.yml
+      loop: "{{ _target_list }}"
+      loop_control:
+        loop_var: target_ip
 
-    - name: Create temporary directory for SSH keys
-      ansible.builtin.tempfile:
-        state: directory
-        suffix: _vault_ssh
-      register: ssh_temp_dir
-
-    - name: Write private key to temp file
-      ansible.builtin.copy:
-        content: "{{ vault_ssh_creds.json.data.private_key }}"
-        dest: "{{ ssh_temp_dir.path }}/id_rsa"
-        mode: '0600'
-      no_log: true
-
-    - name: Write signed certificate to temp file
-      ansible.builtin.copy:
-        content: "{{ vault_ssh_creds.json.data.signed_key }}"
-        dest: "{{ ssh_temp_dir.path }}/id_rsa-cert.pub"
-        mode: '0644'
-      no_log: true
-
-    - name: Add target host to inventory
-      ansible.builtin.add_host:
-        name: "{{ target_hosts }}"
-        groups: targets
-        ansible_user: "{{ ssh_user | default('rhel') }}"
-        ansible_ssh_private_key_file: "{{ ssh_temp_dir.path }}/id_rsa"
-        ansible_ssh_extra_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-
-    - name: Store temp dir path for cleanup
-      ansible.builtin.set_fact:
-        ssh_key_temp_dir: "{{ ssh_temp_dir.path }}"
+# ---------------------------------------------------------------------------
+# Play 2: Configure the target VM
+# ---------------------------------------------------------------------------
+# Connects to target VMs using the Vault-issued SSH credentials from Play 1.
+# gather_facts is false because VMs may still be booting — we wait for SSH
+# first, then gather facts explicitly.
 
 - name: Configure target VM
-  hosts: targets
-  gather_facts: yes
-  become: yes
+  hosts: target
+  become: true
+  gather_facts: false
 
   tasks:
+    - name: Wait for SSH to become available
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Gather facts after SSH is ready
+      ansible.builtin.setup:
+
     - name: Display connection info
       ansible.builtin.debug:
         msg: "Connected to {{ inventory_hostname }} as {{ ansible_user }} using Vault-signed SSH certificate"
@@ -110,6 +120,16 @@
           - python3-pip
         state: present
       when: ansible_os_family == "RedHat"
+
+    - name: Install required packages (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-venv
+        state: present
+        update_cache: true
+      when: ansible_os_family == "Debian"
 
     - name: Create demo file to prove SSH worked
       ansible.builtin.copy:
@@ -128,17 +148,33 @@
     - name: Show success message
       ansible.builtin.debug:
         msg:
+          - "============================================"
           - "SUCCESS: Connected using Vault-signed ephemeral SSH credentials"
+          - "============================================"
           - "Target: {{ inventory_hostname }}"
           - "User: {{ ansible_user }}"
           - "Demo file created at /tmp/vault-ssh-demo.txt"
+          - "============================================"
 
-- name: Cleanup SSH keys
+# ---------------------------------------------------------------------------
+# Play 3: Clean up ephemeral SSH credentials
+# ---------------------------------------------------------------------------
+# Securely removes the Vault-issued private key and certificate.
+# shred overwrites the file before deletion to prevent recovery.
+# This runs even if Play 2 fails (always runs as a separate play).
+
+- name: Clean up ephemeral SSH credentials
   hosts: localhost
-  gather_facts: no
+  gather_facts: false
+  connection: local
+
   tasks:
-    - name: Remove temporary SSH keys
-      ansible.builtin.file:
-        path: "{{ ssh_key_temp_dir }}"
-        state: absent
-      when: ssh_key_temp_dir is defined
+    - name: Shred and remove SSH credentials for each target
+      ansible.builtin.shell: |
+        for dir in /tmp/vault-ssh-*; do
+          if [ -d "$dir" ]; then
+            shred -u "$dir"/id_rsa 2>/dev/null || true
+            rm -rf "$dir"
+          fi
+        done
+      ignore_errors: true
