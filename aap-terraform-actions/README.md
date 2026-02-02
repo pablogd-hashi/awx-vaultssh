@@ -57,8 +57,8 @@ resource "aap_job" "configure_vm" {
 Before deployment, your Vault server must have:
 
 1. **SSH secrets engine enabled** at `ssh-client-signer`
-2. **AppRole auth** configured with role `awx-role`
-3. **SSH signing role** `awx-role` configured
+2. **AppRole auth** configured with role `aap-role`
+3. **SSH signing role** `aap-role` configured
 
 See `../shared/vault-config/` for the policy and `../docs.md` for full setup instructions.
 
@@ -98,7 +98,7 @@ The Vault credential should have:
 - **Vault URL:** Your Vault server URL
 - **Role ID / Secret ID:** AppRole credentials
 - **SSH Path:** `ssh-client-signer`
-- **Role Name:** `awx-role`
+- **Role Name:** `aap-role`
 
 ### 3. Deploy
 
@@ -220,7 +220,7 @@ Replace the Streamlit playbook with your own:
 
 1. **Check certificate validity:**
    ```bash
-   vault write ssh-client-signer/sign/awx-role public_key=@/path/to/key.pub
+   vault write ssh-client-signer/sign/aap-role public_key=@/path/to/key.pub
    ```
 
 2. **Verify AppRole credentials:**

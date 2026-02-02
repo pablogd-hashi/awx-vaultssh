@@ -15,11 +15,11 @@
 # Allow reading the role-id and generating secret-ids
 # -----------------------------------------------------------------------------
 
-path "auth/approle/role/awx-role/role-id" {
+path "auth/approle/role/aap-role/role-id" {
   capabilities = ["read"]
 }
 
-path "auth/approle/role/awx-role/secret-id" {
+path "auth/approle/role/aap-role/secret-id" {
   capabilities = ["update"]
 }
 
@@ -29,12 +29,12 @@ path "auth/approle/role/awx-role/secret-id" {
 # -----------------------------------------------------------------------------
 
 # Sign an existing public key
-path "ssh-client-signer/sign/awx-role" {
+path "ssh-client-signer/sign/aap-role" {
   capabilities = ["create", "update"]
 }
 
 # Issue a new key pair with signed certificate
-path "ssh-client-signer/issue/awx-role" {
+path "ssh-client-signer/issue/aap-role" {
   capabilities = ["create", "update"]
 }
 
@@ -56,6 +56,6 @@ path "ssh-client-signer/public_key" {
 # Allow reading role configuration (useful for debugging)
 # -----------------------------------------------------------------------------
 
-path "ssh-client-signer/roles/awx-role" {
+path "ssh-client-signer/roles/aap-role" {
   capabilities = ["read"]
 }

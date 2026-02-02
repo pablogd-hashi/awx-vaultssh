@@ -30,12 +30,17 @@ action "aap_job_launch" "configure_vm" {
 
     # Extra variables passed to the AAP job
     # These are available in your Ansible playbook as regular variables
+    # Note: vault_approle_role_id and vault_approle_secret_id are injected by AAP credential lookup
     extra_vars = jsonencode({
-      # The IP address of the newly created VM
-      target_host = google_compute_instance.vm.network_interface[0].access_config[0].nat_ip
+      # Target host(s) - the IP address of the newly created VM
+      target_hosts = google_compute_instance.vm.network_interface[0].access_config[0].nat_ip
 
       # SSH user for connecting to the VM
       ssh_user = var.ssh_user
+
+      # Vault configuration for SSH CA
+      vault_addr     = var.vault_addr
+      vault_ssh_role = var.vault_ssh_role
 
       # Application configuration
       streamlit_port = var.streamlit_port
@@ -43,7 +48,6 @@ action "aap_job_launch" "configure_vm" {
       # Metadata about the deployment
       deployment_id = google_compute_instance.vm.instance_id
       created_by    = "terraform-actions"
-      environment   = "demo"
     })
   }
 }
