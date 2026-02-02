@@ -40,6 +40,7 @@ action "aap_job_launch" "configure_vm" {
 
       # Vault configuration for SSH CA
       vault_addr     = var.vault_addr
+      vault_ssh_path = var.vault_ssh_path
       vault_ssh_role = var.vault_ssh_role
 
       # Application configuration

@@ -1,0 +1,144 @@
+---
+# Vault SSH CA Demo - Ephemeral Key Playbook
+#
+# This playbook:
+# 1. Gets ephemeral SSH keys from Vault using /issue/ endpoint
+# 2. SSHs to target VM using those keys
+# 3. Installs a demo application
+#
+# Required variables (passed by Terraform):
+#   - target_hosts: IP address of target VM
+#   - vault_addr: Vault server URL
+#   - vault_ssh_role: Vault SSH signing role
+#   - ssh_user: SSH username for target
+#
+# Injected by AAP Vault Secret Lookup credential:
+#   - vault_approle_role_id
+#   - vault_approle_secret_id
+
+- name: Obtain SSH credentials from Vault
+  hosts: localhost
+  gather_facts: no
+  vars:
+    vault_namespace: "admin"  # For HCP Vault
+
+  tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - target_hosts is defined
+          - vault_addr is defined
+          - vault_ssh_role is defined
+          - vault_approle_role_id is defined
+          - vault_approle_secret_id is defined
+        fail_msg: "Missing required variables. Ensure Terraform passes target_hosts, vault_addr, vault_ssh_role via extra_vars, and AAP injects vault_approle_role_id + vault_approle_secret_id via credential lookup."
+
+    - name: Authenticate to Vault using AppRole
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/auth/approle/login"
+        method: POST
+        headers:
+          X-Vault-Namespace: "{{ vault_namespace | default(omit) }}"
+        body_format: json
+        body:
+          role_id: "{{ vault_approle_role_id }}"
+          secret_id: "{{ vault_approle_secret_id }}"
+        status_code: 200
+      register: vault_auth
+      no_log: true
+
+    - name: Get ephemeral SSH credentials from Vault
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/{{ vault_ssh_path | default('ssh') }}/issue/{{ vault_ssh_role }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vault_auth.json.auth.client_token }}"
+          X-Vault-Namespace: "{{ vault_namespace | default(omit) }}"
+        body_format: json
+        body:
+          valid_principals: "{{ ssh_user | default('rhel') }}"
+        status_code: 200
+      register: vault_ssh_creds
+      no_log: true
+
+    - name: Create temporary directory for SSH keys
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: _vault_ssh
+      register: ssh_temp_dir
+
+    - name: Write private key to temp file
+      ansible.builtin.copy:
+        content: "{{ vault_ssh_creds.json.data.private_key }}"
+        dest: "{{ ssh_temp_dir.path }}/id_rsa"
+        mode: '0600'
+      no_log: true
+
+    - name: Write signed certificate to temp file
+      ansible.builtin.copy:
+        content: "{{ vault_ssh_creds.json.data.signed_key }}"
+        dest: "{{ ssh_temp_dir.path }}/id_rsa-cert.pub"
+        mode: '0644'
+      no_log: true
+
+    - name: Add target host to inventory
+      ansible.builtin.add_host:
+        name: "{{ target_hosts }}"
+        groups: targets
+        ansible_user: "{{ ssh_user | default('rhel') }}"
+        ansible_ssh_private_key_file: "{{ ssh_temp_dir.path }}/id_rsa"
+        ansible_ssh_extra_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+    - name: Store temp dir path for cleanup
+      ansible.builtin.set_fact:
+        ssh_key_temp_dir: "{{ ssh_temp_dir.path }}"
+
+- name: Configure target VM
+  hosts: targets
+  gather_facts: yes
+  become: yes
+
+  tasks:
+    - name: Display connection info
+      ansible.builtin.debug:
+        msg: "Connected to {{ inventory_hostname }} as {{ ansible_user }} using Vault-signed SSH certificate"
+
+    - name: Install required packages (RHEL)
+      ansible.builtin.dnf:
+        name:
+          - python3
+          - python3-pip
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Create demo file to prove SSH worked
+      ansible.builtin.copy:
+        content: |
+          Vault SSH CA Demo
+          ==================
+          Host: {{ inventory_hostname }}
+          User: {{ ansible_user }}
+          Time: {{ ansible_date_time.iso8601 }}
+
+          This file was created by AAP using ephemeral SSH credentials
+          signed by HashiCorp Vault. No static SSH keys were used.
+        dest: /tmp/vault-ssh-demo.txt
+        mode: '0644'
+
+    - name: Show success message
+      ansible.builtin.debug:
+        msg:
+          - "SUCCESS: Connected using Vault-signed ephemeral SSH credentials"
+          - "Target: {{ inventory_hostname }}"
+          - "User: {{ ansible_user }}"
+          - "Demo file created at /tmp/vault-ssh-demo.txt"
+
+- name: Cleanup SSH keys
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Remove temporary SSH keys
+      ansible.builtin.file:
+        path: "{{ ssh_key_temp_dir }}"
+        state: absent
+      when: ssh_key_temp_dir is defined

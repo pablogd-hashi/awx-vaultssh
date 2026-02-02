@@ -87,18 +87,34 @@ aap_job_template_id = 42
 ssh_user = "rhel"
 ```
 
-### 2. Configure AAP Credential
+### 2. Configure AAP
 
-In AAP, create a Machine credential with:
-- **Username:** `rhel` (or your VM user)
-- **SSH Private Key:** A private key for AAP to use
-- **Signed SSH Certificate:** Linked to your Vault credential
+#### Create Credential (HashiCorp Vault Secret Lookup)
 
-The Vault credential should have:
-- **Vault URL:** Your Vault server URL
-- **Role ID / Secret ID:** AppRole credentials
-- **SSH Path:** `ssh-client-signer`
-- **Role Name:** `aap-role`
+**Resources → Credentials → Add:**
+
+| Field | Value |
+|-------|-------|
+| Name | `Vault AppRole` |
+| Credential Type | `HashiCorp Vault Secret Lookup` |
+| Server URL | Your Vault URL |
+| AppRole role_id | `vault read -field=role_id auth/approle/role/aap-role/role-id` |
+| AppRole secret_id | `vault write -f -field=secret_id auth/approle/role/aap-role/secret-id` |
+| Path to Auth | `approle` |
+
+#### Create Job Template
+
+**Resources → Templates → Add → Job Template:**
+
+| Field | Value |
+|-------|-------|
+| Name | `Vault SSH Demo` |
+| Inventory | Your inventory (can be empty, playbook uses `target_hosts`) |
+| Project | Project containing the playbook |
+| Playbook | `playbooks/vault-ssh-configure.yml` |
+| Credentials | `Vault AppRole` |
+
+The playbook uses Vault's `/issue/` endpoint for **true ephemeral keys** - no static SSH keys stored.
 
 ### 3. Deploy
 
