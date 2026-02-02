@@ -37,7 +37,7 @@ variable "vault_ssh_path" {
 variable "vault_ssh_role" {
   description = "Vault SSH signing role name"
   type        = string
-  default     = "awx-role"
+  default     = "aap-role"
 }
 
 # -----------------------------------------------------------------------------
