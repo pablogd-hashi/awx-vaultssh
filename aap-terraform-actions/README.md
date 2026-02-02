@@ -186,7 +186,8 @@ aap-terraform-actions/
 │       ├── compute/             # VM provisioning module
 │       └── network/             # Network configuration module
 ├── playbooks/
-│   └── install-streamlit.yml    # Demo application installation
+│   ├── vault-ssh-configure.yml  # Main playbook - Vault SSH + VM config
+│   └── issue_ssh_creds.yml      # Helper - issues creds per target host
 └── vault/
     └── configure-vm-policy.hcl  # Vault policy for VMs
 ```
