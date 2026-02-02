@@ -1,0 +1,180 @@
+# AAP Terraform Actions Demo
+# https://taskfile.dev
+
+version: "3"
+
+vars:
+  TF_DIR: ./terraform
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  # ---------------------------------------------------------------------------
+  # Prerequisites & Setup
+  # ---------------------------------------------------------------------------
+
+  check:
+    desc: Check prerequisites
+    cmds:
+      - echo "Checking prerequisites..."
+      - |
+        echo -n "Terraform: "
+        if command -v terraform &>/dev/null; then
+          TF_VERSION=$(terraform version -json | jq -r '.terraform_version')
+          echo "$TF_VERSION"
+          # Check if version >= 1.14
+          MAJOR=$(echo $TF_VERSION | cut -d. -f1)
+          MINOR=$(echo $TF_VERSION | cut -d. -f2)
+          if [ "$MAJOR" -lt 1 ] || ([ "$MAJOR" -eq 1 ] && [ "$MINOR" -lt 14 ]); then
+            echo "  ⚠ Terraform 1.14+ required for Actions"
+          fi
+        else
+          echo "NOT FOUND"
+        fi
+      - |
+        echo -n "gcloud: "
+        if command -v gcloud &>/dev/null; then
+          gcloud version 2>/dev/null | head -1
+        else
+          echo "NOT FOUND"
+        fi
+      - |
+        echo -n "Vault CLI: "
+        if command -v vault &>/dev/null; then
+          vault version
+        else
+          echo "NOT FOUND (optional)"
+        fi
+      - |
+        echo -n "VAULT_ADDR: "
+        if [ -n "$VAULT_ADDR" ]; then
+          echo "$VAULT_ADDR"
+        else
+          echo "NOT SET"
+        fi
+      - |
+        echo -n "VAULT_TOKEN: "
+        if [ -n "$VAULT_TOKEN" ]; then
+          echo "SET (hidden)"
+        else
+          echo "NOT SET"
+        fi
+    silent: true
+
+  setup:
+    desc: Initialize Terraform
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - terraform init
+
+  setup:upgrade:
+    desc: Upgrade Terraform providers
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - terraform init -upgrade
+
+  # ---------------------------------------------------------------------------
+  # Terraform Operations
+  # ---------------------------------------------------------------------------
+
+  plan:
+    desc: Plan infrastructure changes
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - terraform plan
+
+  apply:
+    desc: Apply infrastructure changes (creates VM + triggers AAP)
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - terraform apply
+
+  destroy:
+    desc: Destroy all infrastructure
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - terraform destroy
+
+  output:
+    desc: Show Terraform outputs
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - terraform output
+
+  # ---------------------------------------------------------------------------
+  # Action Management
+  # ---------------------------------------------------------------------------
+
+  invoke:
+    desc: Manually invoke the AAP action
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - terraform apply -invoke action.aap_job_launch.configure_vm
+
+  # ---------------------------------------------------------------------------
+  # Vault Operations
+  # ---------------------------------------------------------------------------
+
+  vault:status:
+    desc: Check Vault SSH CA status
+    cmds:
+      - |
+        echo "=== Vault SSH CA Status ==="
+        echo ""
+        echo "SSH secrets engine:"
+        vault secrets list | grep ssh || echo "  No SSH engine found"
+        echo ""
+        echo "SSH signing roles:"
+        vault list ssh-client-signer/roles 2>/dev/null || echo "  No roles found"
+        echo ""
+        echo "AppRole auth:"
+        vault auth list | grep approle || echo "  No AppRole auth found"
+
+  vault:test:
+    desc: Test SSH certificate signing (requires temp key)
+    cmds:
+      - |
+        echo "Generating test key pair..."
+        TMPDIR=$(mktemp -d)
+        ssh-keygen -t ed25519 -f "$TMPDIR/test_key" -N "" -q
+        echo ""
+        echo "Requesting signed certificate from Vault..."
+        vault write -field=signed_key ssh-client-signer/sign/awx-role \
+          public_key=@"$TMPDIR/test_key.pub" \
+          valid_principals=rhel \
+          ttl=5m > "$TMPDIR/test_key-cert.pub"
+        echo ""
+        echo "Certificate details:"
+        ssh-keygen -L -f "$TMPDIR/test_key-cert.pub"
+        echo ""
+        rm -rf "$TMPDIR"
+        echo "Test certificate issued successfully!"
+
+  vault:ca-key:
+    desc: Get Vault SSH CA public key
+    cmds:
+      - vault read -field=public_key ssh-client-signer/config/ca
+
+  # ---------------------------------------------------------------------------
+  # Demo Flow
+  # ---------------------------------------------------------------------------
+
+  demo:
+    desc: Run the full demo (check → setup → apply)
+    cmds:
+      - task: check
+      - echo ""
+      - echo "=== Initializing Terraform ==="
+      - task: setup
+      - echo ""
+      - echo "=== Deploying Infrastructure ==="
+      - task: apply
+
+  clean:
+    desc: Clean Terraform state and cache
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - rm -rf .terraform .terraform.lock.hcl terraform.tfstate* .terraform.tfstate.lock.info

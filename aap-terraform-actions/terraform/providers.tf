@@ -15,6 +15,14 @@ terraform {
       version = "~> 1.0"
     }
   }
+
+  # Uncomment for Terraform Cloud
+  # cloud {
+  #   organization = "your-org"
+  #   workspaces {
+  #     name = "aap-terraform-actions"
+  #   }
+  # }
 }
 
 provider "google" {

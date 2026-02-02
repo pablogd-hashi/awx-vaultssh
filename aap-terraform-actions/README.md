@@ -228,6 +228,68 @@ Replace the Streamlit playbook with your own:
    vault login -method=approle role_id=$ROLE_ID secret_id=$SECRET_ID
    ```
 
+## Terraform Cloud
+
+To run this demo in Terraform Cloud:
+
+### 1. Configure Cloud Block
+
+Uncomment the `cloud` block in `terraform/providers.tf`:
+
+```hcl
+cloud {
+  organization = "your-org"
+  workspaces {
+    name = "aap-terraform-actions"
+  }
+}
+```
+
+### 2. Environment Variables (Sensitive)
+
+Set these as **Environment Variables** in your TFC workspace:
+
+| Variable | Category | Sensitive | Description |
+|----------|----------|-----------|-------------|
+| `GOOGLE_CREDENTIALS` | env | Yes | GCP service account JSON key |
+| `VAULT_TOKEN` | env | Yes | Vault token for SSH CA |
+
+### 3. Terraform Variables
+
+Set these as **Terraform Variables** in your TFC workspace:
+
+| Variable | Sensitive | Description |
+|----------|-----------|-------------|
+| `project_id` | No | GCP project ID |
+| `region` | No | GCP region (default: us-central1) |
+| `zone` | No | GCP zone (default: us-central1-a) |
+| `aap_host` | No | AAP server URL |
+| `aap_token` | Yes | AAP API token |
+| `aap_job_template_id` | No | Job template ID to trigger |
+| `vault_addr` | No | Vault server URL |
+| `ssh_user` | No | SSH user for VMs (default: rhel) |
+
+### 4. Dynamic Credentials (Recommended for Production)
+
+For production, use [dynamic provider credentials](https://developer.hashicorp.com/terraform/cloud-docs/workspaces/dynamic-provider-credentials) instead of static tokens:
+
+- **GCP**: Workload Identity Federation
+- **Vault**: JWT/OIDC authentication with TFC
+
+## Task Commands
+
+| Command | Description |
+|---------|-------------|
+| `task check` | Verify prerequisites |
+| `task setup` | Initialize Terraform |
+| `task plan` | Plan infrastructure changes |
+| `task apply` | Create VM and trigger AAP |
+| `task invoke` | Manually invoke AAP action |
+| `task vault:status` | Check Vault SSH CA status |
+| `task vault:test` | Test certificate signing |
+| `task destroy` | Destroy infrastructure |
+| `task demo` | Run full demo flow |
+
 ## Security Notes
 
 - The AAP token in `terraform.tfvars` should be stored securely (consider using Vault or environment variables)

@@ -2,7 +2,7 @@
 # GCP Configuration
 # -----------------------------------------------------------------------------
 
-project_id = "your-gcp-project-id"
+project_id = "hc-00d1b45fd9b24a22b61e9b206df"
 region     = "us-central1"
 zone       = "us-central1-a"
 
@@ -10,17 +10,17 @@ zone       = "us-central1-a"
 # Vault Configuration
 # -----------------------------------------------------------------------------
 
-vault_addr     = "https://vault.example.com:8200"
-vault_ssh_path = "ssh-client-signer"
-vault_ssh_role = "awx-role"
+vault_addr     = "https://vault-cluster-public-vault-b221167d.82afa726.z1.hashicorp.cloud:8200"
+vault_ssh_path = "ssh"
+vault_ssh_role = "ssh-role"
 
 # -----------------------------------------------------------------------------
 # AAP Configuration
 # -----------------------------------------------------------------------------
 
-aap_host            = "https://aap.example.com"
-aap_token           = "your-aap-api-token"  # Consider using env var: TF_VAR_aap_token
-aap_job_template_id = 42                     # ID of your job template
+aap_host            = "https://aap.pablo-diaz.sbx.hashidemos.io/"
+aap_token           = "60DcjVGjz2ooE9sSDXlyRKz8iY0tUw"  # Consider using env var: TF_VAR_aap_token
+aap_job_template_id = 30                     # ID of your job template
 aap_organization_id = 1
 
 # -----------------------------------------------------------------------------

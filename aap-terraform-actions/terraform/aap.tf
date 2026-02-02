@@ -28,9 +28,6 @@ action "aap_job_launch" "configure_vm" {
     # Set to false if you want fire-and-forget behavior
     wait_for_completion = true
 
-    # Timeout for waiting (in seconds)
-    timeout = 600
-
     # Extra variables passed to the AAP job
     # These are available in your Ansible playbook as regular variables
     extra_vars = jsonencode({
