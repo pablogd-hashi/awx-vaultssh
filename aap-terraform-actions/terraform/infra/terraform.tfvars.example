@@ -1,0 +1,93 @@
+# -----------------------------------------------------------------------------
+# Infrastructure Variables
+# -----------------------------------------------------------------------------
+# Copy this file to terraform.tfvars and update values.
+#
+# Get AAP values from: cd ../aap && terraform output
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# Credential Option
+# -----------------------------------------------------------------------------
+# "A" = Vault Signed SSH (static key in AAP, signed by Vault before connection)
+# "B" = Vault Secrets Lookup (ephemeral keys generated on-demand)
+
+credential_option = "A"
+
+# -----------------------------------------------------------------------------
+# AAP Configuration
+# -----------------------------------------------------------------------------
+# These values come from the AAP deployment outputs.
+# Run: cd ../aap && terraform output
+
+aap_host     = "https://1.2.3.4"  # terraform output -raw aap_url
+aap_username = "admin"
+aap_password = "Hashi123!"
+
+# Organization must exist in AAP (default: "Default")
+aap_organization = "Default"
+
+# AAP resources that will be created
+aap_project_name      = "vault-ssh-demo"
+aap_inventory_name    = "vault-ssh-hosts"
+aap_job_template_name = "configure-vm"
+
+# Git repository for playbooks
+aap_project_scm_url    = "https://github.com/hashicorp-education/learn-vault-ssh-ca-ansible"
+aap_project_scm_branch = "main"
+aap_playbook           = "playbooks/configure.yml"
+
+# -----------------------------------------------------------------------------
+# Vault Configuration
+# -----------------------------------------------------------------------------
+
+vault_address   = "https://vault.example.com:8200"
+vault_namespace = "admin"  # For HCP Vault; leave empty ("") for OSS Vault
+
+# SSH secrets engine configuration
+vault_ssh_mount_path = "ssh"
+vault_ssh_role       = "aap-ssh"
+vault_approle_path   = "approle"
+
+# -----------------------------------------------------------------------------
+# AWS Configuration
+# -----------------------------------------------------------------------------
+
+aws_region = "us-east-1"
+
+# Network (can use AAP VPC or separate VPC)
+vpc_id    = "vpc-xxxxxxxxx"   # From AAP output or existing VPC
+subnet_id = "subnet-xxxxxxxx" # Must be public subnet for SSH access
+
+# -----------------------------------------------------------------------------
+# VM Configuration
+# -----------------------------------------------------------------------------
+
+vm_name_prefix    = "vault-ssh-demo"
+vm_instance_count = 1
+vm_instance_type  = "t3.micro"
+
+# Golden image lookup (built by Packer)
+# Leave vm_ami_id empty to use ami_name_filter
+vm_ami_id          = ""
+vm_ami_name_filter = "rhel9-vault-ssh-ca-*"
+
+# SSH user (must match user created in golden image)
+ssh_user = "ansible"
+
+# -----------------------------------------------------------------------------
+# Network Access
+# -----------------------------------------------------------------------------
+# IMPORTANT: Restrict in production!
+
+allowed_ssh_cidrs = ["0.0.0.0/0"]
+
+# -----------------------------------------------------------------------------
+# Tags
+# -----------------------------------------------------------------------------
+
+tags = {
+  Project     = "vault-ssh-demo"
+  Environment = "demo"
+  ManagedBy   = "terraform"
+}
