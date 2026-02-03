@@ -1,314 +1,432 @@
-# AAP with Terraform Actions (Enterprise)
+# AAP Terraform Actions - Vault SSH CA
 
-This folder contains a production-ready deployment using **Red Hat Ansible Automation Platform** and **Terraform Actions** to provision VMs with Vault-signed SSH certificates.
+Comprehensive deployment solution using **Terraform Actions**, **HashiCorp Vault SSH CA**, and **Red Hat Ansible Automation Platform** to provision and configure VMs with certificate-based SSH authentication.
 
-## Overview
-
-This approach uses Terraform Actions (introduced in Terraform 1.14) to orchestrate the complete workflow:
-
-1. Terraform provisions a VM in GCP
-2. Terraform triggers AAP via Actions after VM creation
-3. AAP authenticates to Vault using AppRole
-4. Vault issues a short-lived SSH certificate
-5. AAP connects to the new VM and installs a demo Streamlit application
-
-## What are Terraform Actions?
-
-Terraform Actions solve a long-standing problem: how do you run non-CRUD operations (like triggering Ansible, invoking a Lambda, or invalidating a cache) as part of your infrastructure workflow?
-
-Before Actions, people used workarounds like `local-exec` provisioners or fake data sources. These were brittle and didn't fit Terraform's mental model.
-
-**Actions are different:**
-- They're declared in your Terraform config (not hidden in shell scripts)
-- They trigger on resource lifecycle events (`after_create`, `after_update`, `before_destroy`)
-- They don't manage state - they just run when needed
-- They can be invoked manually: `terraform apply -invoke action.aap_job_launch.configure_vm`
-
-### Why Actions Instead of Resources?
-
-The old approach used an `aap_job` resource:
-
-```hcl
-# OLD - Don't use this
-resource "aap_job" "configure_vm" {
-  job_template_id = var.aap_job_template_id
-  extra_vars = jsonencode({ target_host = module.compute.vm_ip })
-}
-```
-
-**Problems with resources:**
-- The job is treated as managed state - Terraform tracks it
-- `terraform destroy` tries to "destroy" the job (what does that even mean?)
-- Re-running `terraform apply` might re-trigger the job unexpectedly
-- The job runs during the plan phase in some providers
-
-**Actions fix all of this** by being explicit triggers, not managed resources.
-
-## Prerequisites
-
-- Terraform 1.14+
-- Red Hat Ansible Automation Platform (with API access)
-- HashiCorp Vault server with SSH CA configured
-- GCP project with appropriate permissions
-- AAP credential type `HashiCorp Vault Signed SSH` configured
-
-## Vault Setup
-
-Before deployment, your Vault server must have:
-
-1. **SSH secrets engine enabled** at `ssh-client-signer`
-2. **AppRole auth** configured with role `aap-role`
-3. **SSH signing role** `aap-role` configured
-
-See `../shared/vault-config/` for the policy and `../docs.md` for full setup instructions.
-
-## Quick Start
-
-### 1. Configure Variables
-
-```bash
-cp terraform/terraform.tfvars.example terraform/terraform.tfvars
-```
-
-Edit `terraform.tfvars` with your values:
-
-```hcl
-# GCP Configuration
-project_id = "your-gcp-project"
-region     = "us-central1"
-zone       = "us-central1-a"
-
-# AAP Configuration
-aap_host            = "https://aap.example.com"
-aap_token           = "your-aap-token"
-aap_job_template_id = 42
-
-# VM Configuration
-ssh_user = "rhel"
-```
-
-### 2. Configure AAP
-
-#### Create Credential (HashiCorp Vault Secret Lookup)
-
-**Resources → Credentials → Add:**
-
-| Field | Value |
-|-------|-------|
-| Name | `Vault AppRole` |
-| Credential Type | `HashiCorp Vault Secret Lookup` |
-| Server URL | Your Vault URL |
-| AppRole role_id | `vault read -field=role_id auth/approle/role/aap-role/role-id` |
-| AppRole secret_id | `vault write -f -field=secret_id auth/approle/role/aap-role/secret-id` |
-| Path to Auth | `approle` |
-
-#### Create Job Template
-
-**Resources → Templates → Add → Job Template:**
-
-| Field | Value |
-|-------|-------|
-| Name | `Vault SSH Demo` |
-| Inventory | Your inventory (can be empty, playbook uses `target_hosts`) |
-| Project | Project containing the playbook |
-| Playbook | `playbooks/vault-ssh-configure.yml` |
-| Credentials | `Vault AppRole` |
-
-The playbook uses Vault's `/issue/` endpoint for **true ephemeral keys** - no static SSH keys stored.
-
-### 3. Deploy
-
-```bash
-cd terraform
-terraform init
-terraform apply
-```
-
-### 4. Watch the Magic
-
-Terraform will:
-1. Create the VM in GCP
-2. Configure firewall rules
-3. Trigger the AAP job via Actions
-4. AAP will configure the VM with the Streamlit app
-
-You can also manually invoke the action:
-```bash
-terraform apply -invoke action.aap_job_launch.configure_vm
-```
-
-## Architecture
+## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        DEPLOYMENT FLOW                               │
-└─────────────────────────────────────────────────────────────────────┘
-
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│  Terraform   │────>│     GCP      │────>│   New VM     │
-│   Apply      │     │   Compute    │     │  (created)   │
-└──────┬───────┘     └──────────────┘     └──────────────┘
-       │                                          ▲
-       │ after_create                             │
-       ▼                                          │
-┌──────────────┐     ┌──────────────┐             │
-│  TF Action   │────>│     AAP      │             │
-│  (trigger)   │     │  Controller  │             │
-└──────────────┘     └──────┬───────┘             │
-                           │                      │
-                           ▼                      │
-                    ┌──────────────┐              │
-                    │    Vault     │              │
-                    │   (SSH CA)   │              │
-                    └──────┬───────┘              │
-                           │ signed cert          │
-                           ▼                      │
-                    ┌──────────────┐              │
-                    │     AAP      │──────────────┘
-                    │  (SSH + run  │
-                    │   playbook)  │
-                    └──────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         SINGLE TERRAFORM APPLY                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Phase 1: Vault Provisioning                                               │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  • SSH secrets engine                                                │   │
+│   │  • SSH CA signing key                                                │   │
+│   │  • SSH role for certificate issuance                                │   │
+│   │  • AppRole auth method + policy                                     │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                    │                                        │
+│                                    ▼                                        │
+│   Phase 2: AWS Infrastructure                                               │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  • VPC, subnet, internet gateway                                    │   │
+│   │  • Security groups (SSH + app ports)                                │   │
+│   │  • EC2 instances (from golden AMI)                                  │   │
+│   │  • AAP inventory hosts                                              │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                    │                                        │
+│                                    ▼                                        │
+│   Phase 3: AAP Trigger (Terraform Action)                                   │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  • Passes AppRole credentials via extra_vars                        │   │
+│   │  • Playbook authenticates to Vault                                  │   │
+│   │  • Gets SSH credentials (Option A or B)                             │   │
+│   │  • Configures target VMs                                            │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Folder Structure
+## Two Credential Options
+
+### Option A: Vault Secrets Lookup (Ephemeral Keys)
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                    OPTION A: EPHEMERAL KEYS                                 │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  AAP Controller                         Vault                               │
+│  ┌───────────────┐                     ┌───────────────┐                   │
+│  │               │ 1. AppRole login    │               │                   │
+│  │   Ansible     │────────────────────>│   /auth/      │                   │
+│  │   Playbook    │<────────────────────│   approle     │                   │
+│  │               │    client_token     │               │                   │
+│  │               │                     │               │                   │
+│  │               │ 2. POST /ssh/issue  │               │                   │
+│  │               │────────────────────>│   /ssh/issue  │                   │
+│  │               │<────────────────────│   /:role      │                   │
+│  │               │  private_key +      │               │                   │
+│  │               │  signed_cert        └───────────────┘                   │
+│  │               │                                                          │
+│  │               │ 3. SSH with ephemeral creds                             │
+│  │               │─────────────────────────────────────>  Target VM        │
+│  │               │                                                          │
+│  │               │ 4. Shred credentials                                    │
+│  └───────────────┘                                                          │
+│                                                                             │
+│  ✓ No static keys stored anywhere                                          │
+│  ✓ Keys generated fresh for each connection                                │
+│  ✓ Automatic credential rotation                                           │
+│  ✓ Keys shredded after use                                                 │
+│                                                                             │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Option B: Vault Signed SSH (Static Key in AAP)
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                    OPTION B: SIGNED SSH                                     │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  AAP Controller                         Vault                               │
+│  ┌───────────────┐                     ┌───────────────┐                   │
+│  │               │ 1. AppRole login    │               │                   │
+│  │   Static      │────────────────────>│   /auth/      │                   │
+│  │   Private Key │<────────────────────│   approle     │                   │
+│  │   (in AAP)    │    client_token     │               │                   │
+│  │               │                     │               │                   │
+│  │               │ 2. POST /ssh/sign   │               │                   │
+│  │   Public Key  │────────────────────>│   /ssh/sign   │                   │
+│  │               │<────────────────────│   /:role      │                   │
+│  │               │    signed_cert      │               │                   │
+│  │               │    (30 min TTL)     └───────────────┘                   │
+│  │               │                                                          │
+│  │               │ 3. SSH with static key + fresh cert                     │
+│  │               │─────────────────────────────────────>  Target VM        │
+│  │               │                                                          │
+│  └───────────────┘                                                          │
+│                                                                             │
+│  ✓ Works with existing AAP Machine Credentials                             │
+│  ✓ Private key securely stored in AAP                                      │
+│  ✓ Certificates are short-lived (default 30 min)                           │
+│  ✓ Compatible with enterprise key management                               │
+│                                                                             │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Project Structure
 
 ```
 aap-terraform-actions/
-├── README.md                    # This file
+├── README.md                           # This file
+├── Taskfile.yml                        # Task runner commands
+│
+├── packer/
+│   ├── vm-golden-image/               # Golden VM image with Vault SSH CA
+│   │   ├── main.pkr.hcl               # Packer configuration (AWS/RHEL9)
+│   │   └── variables.pkr.hcl          # Packer variables
+│   │
+│   └── aap-controller/                # AAP Controller image
+│       ├── main.pkr.hcl               # Packer configuration
+│       ├── variables.pkr.hcl          # Packer variables
+│       ├── bootstrap.sh               # First-boot installation script
+│       └── inventory.pkrtpl.hcl       # AAP inventory template
+│
 ├── terraform/
-│   ├── main.tf                  # Main Terraform configuration
-│   ├── aap.tf                   # AAP Action configuration
-│   ├── variables.tf             # Variable definitions
-│   ├── outputs.tf               # Output definitions
-│   ├── providers.tf             # Provider configuration
-│   ├── terraform.tfvars.example # Example variables
-│   └── modules/
-│       ├── compute/             # VM provisioning module
-│       └── network/             # Network configuration module
-├── playbooks/
-│   ├── vault-ssh-configure.yml  # Main playbook - Vault SSH + VM config
-│   └── issue_ssh_creds.yml      # Helper - issues creds per target host
-└── vault/
-    └── configure-vm-policy.hcl  # Vault policy for VMs
+│   ├── aws/                           # AWS Infrastructure (primary)
+│   │   ├── providers.tf               # Provider configuration
+│   │   ├── variables.tf               # Variable definitions
+│   │   ├── vault.tf                   # Vault SSH CA provisioning
+│   │   ├── network.tf                 # VPC, subnets, security groups
+│   │   ├── ec2.tf                     # EC2 instances
+│   │   ├── aap.tf                     # AAP hosts + job trigger action
+│   │   ├── outputs.tf                 # Output values
+│   │   └── terraform.tfvars.example   # Example configuration
+│   │
+│   └── (gcp/)                         # GCP Infrastructure (legacy)
+│       └── ...
+│
+└── playbooks/
+    ├── vault-ssh-main.yml             # Router - selects Option A or B
+    ├── option-a-ephemeral-keys.yml    # Option A: Ephemeral keys
+    ├── option-b-signed-ssh.yml        # Option B: Signed SSH
+    ├── vault-ssh-configure.yml        # Legacy playbook (Option A)
+    ├── issue_ssh_creds.yml            # Legacy helper
+    └── tasks/
+        └── issue-ssh-credentials.yml  # Issue creds for single host
 ```
 
-## Customization
+## Prerequisites
 
-### Different Cloud Provider
+- **Terraform** >= 1.14.0 (required for Actions)
+- **Packer** >= 1.9.0
+- **AWS CLI** configured with credentials
+- **Vault CLI** (optional, for testing)
+- **Task** (go-task/task) for running commands
 
-The Terraform modules can be adapted for AWS or Azure:
-- Replace `modules/compute/` with appropriate cloud resources
-- Update firewall/security group configurations
-- Modify the AAP inventory to use the correct hostname/IP
+## Quick Start
 
-### Different Demo Application
+### 1. Build Golden VM Image
 
-Replace the Streamlit playbook with your own:
-1. Create a new playbook in `playbooks/`
-2. Update the AAP job template
-3. Modify the `extra_vars` in the Action if needed
+```bash
+# Check prerequisites
+task check
 
-## Troubleshooting
+# Build the golden image (auto-fetches Vault CA key)
+task packer:vm:build:auto
+```
 
-### AAP Job Fails to Connect
+### 2. Configure Terraform
 
-1. **Check VM is reachable:**
-   ```bash
-   gcloud compute ssh --zone=us-central1-a your-vm-name
-   ```
+```bash
+# Copy example tfvars
+cp terraform/aws/terraform.tfvars.example terraform/aws/terraform.tfvars
 
-2. **Verify Vault CA key is on VM:**
-   The VM startup script should fetch and install the Vault CA public key.
+# Edit with your values
+vim terraform/aws/terraform.tfvars
+```
 
-3. **Check AAP credential configuration:**
-   Ensure the Machine credential is linked to the Vault credential.
+Required variables:
+```hcl
+# Vault
+vault_addr      = "https://vault.example.com:8200"
+vault_token     = "hvs.xxxxx"
+vault_namespace = "admin"  # For HCP Vault
 
-### Terraform Action Doesn't Trigger
+# AAP
+aap_host     = "https://aap.example.com"
+aap_username = "admin"
+aap_password = "your-password"
 
-1. **Verify Terraform version:**
-   ```bash
-   terraform version  # Must be 1.14+
-   ```
+# Credential option: "A" or "B"
+credential_option = "A"
+```
 
-2. **Check action configuration:**
-   Ensure the `action_trigger` is correctly configured in the lifecycle block.
+### 3. Deploy Infrastructure
 
-### Vault Certificate Issues
+```bash
+# Option A: Ephemeral keys (recommended)
+task demo:option-a
 
-1. **Check certificate validity:**
-   ```bash
-   vault write ssh-client-signer/sign/aap-role public_key=@/path/to/key.pub
-   ```
+# Option B: Signed SSH
+task demo:option-b
+```
 
-2. **Verify AppRole credentials:**
-   ```bash
-   vault login -method=approle role_id=$ROLE_ID secret_id=$SECRET_ID
-   ```
+### 4. Verify Deployment
 
-## Terraform Cloud
+```bash
+# Show outputs
+task tf:output
 
-To run this demo in Terraform Cloud:
+# SSH to a VM (using Vault-signed certificate)
+ssh -i /path/to/key -i /path/to/cert.pub ansible@<vm-ip>
+```
 
-### 1. Configure Cloud Block
+## Task Commands Reference
 
-Uncomment the `cloud` block in `terraform/providers.tf`:
+### Packer Commands
+
+| Command | Description |
+|---------|-------------|
+| `task packer:vm:init` | Initialize Packer for VM image |
+| `task packer:vm:build:auto` | Build VM image (auto-fetch CA key) |
+| `task packer:aap:init` | Initialize Packer for AAP image |
+| `task packer:aap:build` | Build AAP controller image |
+| `task packer:build:all` | Build all images |
+
+### Terraform Commands
+
+| Command | Description |
+|---------|-------------|
+| `task tf:init` | Initialize Terraform |
+| `task tf:plan` | Plan infrastructure |
+| `task tf:apply` | Apply infrastructure |
+| `task tf:apply:option-a` | Apply with Option A |
+| `task tf:apply:option-b` | Apply with Option B |
+| `task tf:destroy` | Destroy infrastructure |
+| `task tf:invoke` | Manually invoke AAP action |
+
+### Vault Commands
+
+| Command | Description |
+|---------|-------------|
+| `task vault:status` | Check Vault SSH CA status |
+| `task vault:ca-key` | Get CA public key |
+| `task vault:test:issue` | Test /ssh/issue endpoint |
+| `task vault:test:sign` | Test /ssh/sign endpoint |
+
+### Demo Flows
+
+| Command | Description |
+|---------|-------------|
+| `task demo:option-a` | Full demo with ephemeral keys |
+| `task demo:option-b` | Full demo with signed SSH |
+| `task demo:full` | Build images + deploy |
+
+## Security Model
+
+### Traditional SSH vs Vault SSH CA
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      TRADITIONAL SSH                                     │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ❌ Static private keys scattered across systems                        │
+│  ❌ Public keys in authorized_keys (manual management)                  │
+│  ❌ Keys never expire (unless manually rotated)                         │
+│  ❌ Key revocation is painful                                           │
+│  ❌ Audit trail: "someone with this key logged in"                      │
+│                                                                          │
+│  AAP Credential Store                    Target VMs                     │
+│  ┌─────────────────────┐                ┌─────────────────────┐        │
+│  │  private_key.pem    │────SSH────────>│  authorized_keys    │        │
+│  │  (static, forever)  │                │  (static, forever)  │        │
+│  └─────────────────────┘                └─────────────────────┘        │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                       VAULT SSH CA                                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ✅ Short-lived certificates (30 min default)                           │
+│  ✅ VMs trust the CA, not individual keys                               │
+│  ✅ Automatic expiration - no manual revocation needed                  │
+│  ✅ Certificates can encode identity (principal)                        │
+│  ✅ Full audit trail in Vault                                           │
+│                                                                          │
+│  Vault SSH CA                            Target VMs                     │
+│  ┌─────────────────────┐                ┌─────────────────────┐        │
+│  │  Sign certificates  │────CERT───────>│  TrustedUserCAKeys  │        │
+│  │  TTL: 30 minutes    │                │  (trusts CA only)   │        │
+│  └─────────────────────┘                └─────────────────────┘        │
+│          ▲                                                              │
+│          │                                                              │
+│  ┌───────┴───────┐                                                      │
+│  │ AppRole Auth  │ ← AAP authenticates here                            │
+│  │ Policy-based  │                                                      │
+│  └───────────────┘                                                      │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+## AAP Configuration
+
+### No Manual Credential Setup Required!
+
+This solution passes all Vault credentials via `extra_vars`, so you don't need to configure AAP credentials manually:
 
 ```hcl
-cloud {
-  organization = "your-org"
-  workspaces {
-    name = "aap-terraform-actions"
+# terraform/aws/aap.tf
+extra_vars = jsonencode({
+  vault_approle_role_id   = local.vault_approle_role_id
+  vault_approle_secret_id = local.vault_approle_secret_id
+  # ... other vars
+})
+```
+
+### Job Template Setup
+
+1. **Create Project** pointing to this repo
+2. **Create Inventory** (can be empty - hosts added dynamically)
+3. **Create Job Template**:
+   - Playbook: `playbooks/vault-ssh-main.yml`
+   - Extra Variables: Leave empty (provided by Terraform)
+
+## Terraform Actions
+
+### What Are Actions?
+
+Terraform Actions (v1.14+) are declarative triggers for non-CRUD operations:
+
+```hcl
+action "aap_job_launch" "configure_vm" {
+  config {
+    job_template_id     = data.aap_job_template.configure_vm.id
+    wait_for_completion = true
+    extra_vars          = jsonencode({ ... })
+  }
+}
+
+resource "aap_host" "vm" {
+  # ...
+  lifecycle {
+    action_trigger {
+      events  = [after_create, after_update]
+      actions = [action.aap_job_launch.configure_vm]
+    }
   }
 }
 ```
 
-### 2. Environment Variables (Sensitive)
+### Why Actions Instead of Resources?
 
-Set these as **Environment Variables** in your TFC workspace:
+| Aspect | Resource (old) | Action (new) |
+|--------|---------------|--------------|
+| State | Tracked by Terraform | Not tracked |
+| Destroy | Tries to "destroy" the job | No-op |
+| Re-run | May unexpectedly re-trigger | Explicit triggers |
+| Manual invoke | Not supported | `terraform apply -invoke` |
 
-| Variable | Category | Sensitive | Description |
-|----------|----------|-----------|-------------|
-| `GOOGLE_CREDENTIALS` | env | Yes | GCP service account JSON key |
-| `VAULT_TOKEN` | env | Yes | Vault token for SSH CA |
+### Manual Invocation
 
-### 3. Terraform Variables
+```bash
+# Re-run the AAP job without changing infrastructure
+task tf:invoke
+# or
+terraform apply -invoke action.aap_job_launch.configure_vm
+```
 
-Set these as **Terraform Variables** in your TFC workspace:
+## Troubleshooting
 
-| Variable | Sensitive | Description |
-|----------|-----------|-------------|
-| `project_id` | No | GCP project ID |
-| `region` | No | GCP region (default: us-central1) |
-| `zone` | No | GCP zone (default: us-central1-a) |
-| `aap_host` | No | AAP server URL |
-| `aap_token` | Yes | AAP API token |
-| `aap_job_template_id` | No | Job template ID to trigger |
-| `vault_addr` | No | Vault server URL |
-| `ssh_user` | No | SSH user for VMs (default: rhel) |
+### Packer Build Fails
 
-### 4. Dynamic Credentials (Recommended for Production)
+```bash
+# Check Vault connectivity
+task vault:status
 
-For production, use [dynamic provider credentials](https://developer.hashicorp.com/terraform/cloud-docs/workspaces/dynamic-provider-credentials) instead of static tokens:
+# Get CA key manually
+vault read -field=public_key ssh/config/ca
+```
 
-- **GCP**: Workload Identity Federation
-- **Vault**: JWT/OIDC authentication with TFC
+### Terraform Apply Fails
 
-## Task Commands
+```bash
+# Validate configuration
+task tf:validate
 
-| Command | Description |
-|---------|-------------|
-| `task check` | Verify prerequisites |
-| `task setup` | Initialize Terraform |
-| `task plan` | Plan infrastructure changes |
-| `task apply` | Create VM and trigger AAP |
-| `task invoke` | Manually invoke AAP action |
-| `task vault:status` | Check Vault SSH CA status |
-| `task vault:test` | Test certificate signing |
-| `task destroy` | Destroy infrastructure |
-| `task demo` | Run full demo flow |
+# Check provider versions
+terraform version
+```
 
-## Security Notes
+### AAP Job Fails
 
-- The AAP token in `terraform.tfvars` should be stored securely (consider using Vault or environment variables)
-- VM startup scripts should use HTTPS to fetch the Vault CA key
-- Consider using Vault's Kubernetes auth method if AAP runs in Kubernetes
+1. Check AAP job output in the web UI
+2. Verify Vault credentials:
+   ```bash
+   task vault:test:issue  # Test Option A
+   task vault:test:sign   # Test Option B
+   ```
+3. Check target VM is reachable (security groups)
+
+### SSH Connection Fails
+
+1. Verify golden image has Vault CA configured:
+   ```bash
+   # On target VM
+   cat /etc/ssh/trusted-user-ca-keys.pem
+   grep TrustedUserCAKeys /etc/ssh/sshd_config
+   ```
+2. Check certificate validity:
+   ```bash
+   ssh-keygen -L -f /path/to/cert.pub
+   ```
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `VAULT_ADDR` | Vault server URL |
+| `VAULT_TOKEN` | Vault authentication token |
+| `VAULT_NAMESPACE` | Vault namespace (for HCP/Enterprise) |
+| `AWS_REGION` | AWS region (default: us-east-1) |
+| `AAP_SETUP_BUNDLE` | Path to AAP setup bundle (for packer:aap:build) |
+
+## Related Projects
+
+- [terraform-actions-ansible-job-vault-ssh-vm-config](https://github.com/pablogd-hashi/terraform-actions-ansible-job-vault-ssh-vm-config) - Original reference implementation
+- [promptOPS-tf-aap](../../../ai/promptOPS/promptOPS-tf-aap/) - PromptOPS variant with multi-VM support

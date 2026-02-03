@@ -28,6 +28,12 @@ variable "vault_addr" {
   type        = string
 }
 
+variable "vault_namespace" {
+  description = "Vault namespace (empty for OSS, 'admin' for HCP Vault)"
+  type        = string
+  default     = ""
+}
+
 variable "vault_ssh_path" {
   description = "Path to the SSH secrets engine in Vault"
   type        = string

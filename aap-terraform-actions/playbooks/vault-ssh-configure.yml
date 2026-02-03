@@ -43,8 +43,7 @@
   vars:
     # Parse comma-separated target_hosts into a list (handles single IP too)
     _target_list: "{{ target_hosts.split(',') | map('trim') | list }}"
-    # HCP Vault namespace (leave empty for OSS Vault)
-    vault_namespace: "admin"
+    # vault_namespace is passed from Terraform (empty string for OSS, "admin" for HCP)
 
   tasks:
     - name: Validate required variables

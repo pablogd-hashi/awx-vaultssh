@@ -39,9 +39,10 @@ action "aap_job_launch" "configure_vm" {
       ssh_user = var.ssh_user
 
       # Vault configuration for SSH CA
-      vault_addr     = var.vault_addr
-      vault_ssh_path = var.vault_ssh_path
-      vault_ssh_role = var.vault_ssh_role
+      vault_addr      = var.vault_addr
+      vault_namespace = var.vault_namespace
+      vault_ssh_path  = var.vault_ssh_path
+      vault_ssh_role  = var.vault_ssh_role
 
       # Application configuration
       streamlit_port = var.streamlit_port

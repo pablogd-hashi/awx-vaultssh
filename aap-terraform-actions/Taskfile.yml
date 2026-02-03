@@ -1,10 +1,28 @@
-# AAP Terraform Actions Demo
+# =============================================================================
+# AAP Terraform Actions - Taskfile
+# =============================================================================
+# Comprehensive build and deploy commands for:
+#   - Packer image builds (golden VM image, AAP controller)
+#   - Terraform infrastructure (AWS)
+#   - Vault SSH CA operations
+#   - Both credential options (A: ephemeral, B: signed SSH)
+#
 # https://taskfile.dev
+# =============================================================================
 
 version: "3"
 
 vars:
-  TF_DIR: ./terraform
+  # Directories
+  TF_AWS_DIR: ./terraform/aws
+  TF_GCP_DIR: ./terraform
+  PACKER_VM_DIR: ./packer/vm-golden-image
+  PACKER_AAP_DIR: ./packer/aap-controller
+
+  # Defaults (override via environment or CLI)
+  AWS_REGION: '{{.AWS_REGION | default "us-east-1"}}'
+  VAULT_SSH_MOUNT: '{{.VAULT_SSH_MOUNT | default "ssh"}}'
+  VAULT_SSH_ROLE: '{{.VAULT_SSH_ROLE | default "aap-ssh"}}'
 
 tasks:
   default:
@@ -12,34 +30,45 @@ tasks:
     cmds:
       - task --list
 
-  # ---------------------------------------------------------------------------
+  # ===========================================================================
   # Prerequisites & Setup
-  # ---------------------------------------------------------------------------
+  # ===========================================================================
 
   check:
-    desc: Check prerequisites
+    desc: Check all prerequisites
     cmds:
-      - echo "Checking prerequisites..."
+      - |
+        echo "═══════════════════════════════════════════════════════════════"
+        echo " Checking Prerequisites"
+        echo "═══════════════════════════════════════════════════════════════"
       - |
         echo -n "Terraform: "
         if command -v terraform &>/dev/null; then
           TF_VERSION=$(terraform version -json | jq -r '.terraform_version')
           echo "$TF_VERSION"
-          # Check if version >= 1.14
           MAJOR=$(echo $TF_VERSION | cut -d. -f1)
           MINOR=$(echo $TF_VERSION | cut -d. -f2)
           if [ "$MAJOR" -lt 1 ] || ([ "$MAJOR" -eq 1 ] && [ "$MINOR" -lt 14 ]); then
-            echo "  ⚠ Terraform 1.14+ required for Actions"
+            echo "  ⚠ WARNING: Terraform 1.14+ required for Actions"
+          else
+            echo "  ✓ Version OK (Actions supported)"
           fi
         else
-          echo "NOT FOUND"
+          echo "NOT FOUND ✗"
         fi
       - |
-        echo -n "gcloud: "
-        if command -v gcloud &>/dev/null; then
-          gcloud version 2>/dev/null | head -1
+        echo -n "Packer: "
+        if command -v packer &>/dev/null; then
+          packer version | head -1
         else
-          echo "NOT FOUND"
+          echo "NOT FOUND ✗"
+        fi
+      - |
+        echo -n "AWS CLI: "
+        if command -v aws &>/dev/null; then
+          aws --version 2>&1 | head -1
+        else
+          echo "NOT FOUND ✗"
         fi
       - |
         echo -n "Vault CLI: "
@@ -49,92 +78,260 @@ tasks:
           echo "NOT FOUND (optional)"
         fi
       - |
-        echo -n "VAULT_ADDR: "
-        if [ -n "$VAULT_ADDR" ]; then
-          echo "$VAULT_ADDR"
-        else
-          echo "NOT SET"
-        fi
-      - |
-        echo -n "VAULT_TOKEN: "
-        if [ -n "$VAULT_TOKEN" ]; then
-          echo "SET (hidden)"
-        else
-          echo "NOT SET"
-        fi
+        echo ""
+        echo "Environment Variables:"
+        echo -n "  VAULT_ADDR: "
+        if [ -n "$VAULT_ADDR" ]; then echo "$VAULT_ADDR"; else echo "NOT SET"; fi
+        echo -n "  VAULT_TOKEN: "
+        if [ -n "$VAULT_TOKEN" ]; then echo "SET (hidden)"; else echo "NOT SET"; fi
+        echo -n "  VAULT_NAMESPACE: "
+        if [ -n "$VAULT_NAMESPACE" ]; then echo "$VAULT_NAMESPACE"; else echo "NOT SET"; fi
+        echo -n "  AWS_REGION: "
+        if [ -n "$AWS_REGION" ]; then echo "$AWS_REGION"; else echo "NOT SET (default: us-east-1)"; fi
     silent: true
 
-  setup:
-    desc: Initialize Terraform
-    dir: "{{.TF_DIR}}"
+  # ===========================================================================
+  # Packer - Golden VM Image (with Vault SSH CA)
+  # ===========================================================================
+
+  packer:vm:init:
+    desc: Initialize Packer for VM golden image
+    dir: "{{.PACKER_VM_DIR}}"
+    cmds:
+      - packer init .
+
+  packer:vm:validate:
+    desc: Validate VM golden image Packer config
+    dir: "{{.PACKER_VM_DIR}}"
+    cmds:
+      - packer validate .
+    vars:
+      VAULT_SSH_CA_PUBLIC_KEY: '{{.VAULT_SSH_CA_PUBLIC_KEY | default "dummy-key-for-validation"}}'
+
+  packer:vm:build:
+    desc: Build VM golden image with Vault SSH CA
+    dir: "{{.PACKER_VM_DIR}}"
+    cmds:
+      - |
+        if [ -z "$VAULT_SSH_CA_PUBLIC_KEY" ]; then
+          echo "Fetching Vault SSH CA public key..."
+          export VAULT_SSH_CA_PUBLIC_KEY=$(vault read -field=public_key {{.VAULT_SSH_MOUNT}}/config/ca)
+        fi
+        packer build \
+          -var "vault_ssh_ca_public_key=$VAULT_SSH_CA_PUBLIC_KEY" \
+          -var "aws_region={{.AWS_REGION}}" \
+          .
+    env:
+      PACKER_LOG: "1"
+
+  packer:vm:build:auto:
+    desc: Build VM golden image (auto-fetch CA key from Vault)
+    dir: "{{.PACKER_VM_DIR}}"
+    cmds:
+      - |
+        echo "Fetching Vault SSH CA public key..."
+        VAULT_SSH_CA_PUBLIC_KEY=$(vault read -field=public_key {{.VAULT_SSH_MOUNT}}/config/ca)
+        echo "Building golden VM image..."
+        packer build \
+          -var "vault_ssh_ca_public_key=$VAULT_SSH_CA_PUBLIC_KEY" \
+          -var "aws_region={{.AWS_REGION}}" \
+          .
+
+  # ===========================================================================
+  # Packer - AAP Controller Image
+  # ===========================================================================
+
+  packer:aap:init:
+    desc: Initialize Packer for AAP controller image
+    dir: "{{.PACKER_AAP_DIR}}"
+    cmds:
+      - packer init .
+
+  packer:aap:validate:
+    desc: Validate AAP controller Packer config
+    dir: "{{.PACKER_AAP_DIR}}"
+    cmds:
+      - packer validate -var "aap_setup_bundle_path=/tmp/dummy.tar.gz" .
+
+  packer:aap:build:
+    desc: Build AAP controller image
+    dir: "{{.PACKER_AAP_DIR}}"
+    cmds:
+      - |
+        if [ -z "$AAP_SETUP_BUNDLE" ]; then
+          echo "ERROR: AAP_SETUP_BUNDLE environment variable not set"
+          echo "Set it to the path of your AAP setup bundle tar.gz"
+          exit 1
+        fi
+        packer build \
+          -var "aap_setup_bundle_path=$AAP_SETUP_BUNDLE" \
+          -var "aws_region={{.AWS_REGION}}" \
+          .
+    env:
+      PACKER_LOG: "1"
+
+  # ===========================================================================
+  # Packer - Build All Images
+  # ===========================================================================
+
+  packer:init:
+    desc: Initialize all Packer configurations
+    cmds:
+      - task: packer:vm:init
+      - task: packer:aap:init
+
+  packer:build:all:
+    desc: Build all Packer images (VM + AAP)
+    cmds:
+      - task: packer:vm:build:auto
+      - task: packer:aap:build
+
+  # ===========================================================================
+  # Terraform - AWS Infrastructure
+  # ===========================================================================
+
+  tf:init:
+    desc: Initialize Terraform (AWS)
+    dir: "{{.TF_AWS_DIR}}"
     cmds:
       - terraform init
 
-  setup:upgrade:
-    desc: Upgrade Terraform providers
-    dir: "{{.TF_DIR}}"
+  tf:init:upgrade:
+    desc: Upgrade Terraform providers (AWS)
+    dir: "{{.TF_AWS_DIR}}"
     cmds:
       - terraform init -upgrade
 
-  # ---------------------------------------------------------------------------
-  # Terraform Operations
-  # ---------------------------------------------------------------------------
+  tf:validate:
+    desc: Validate Terraform configuration
+    dir: "{{.TF_AWS_DIR}}"
+    cmds:
+      - terraform validate
 
-  plan:
+  tf:plan:
     desc: Plan infrastructure changes
-    dir: "{{.TF_DIR}}"
+    dir: "{{.TF_AWS_DIR}}"
     cmds:
       - terraform plan
 
-  apply:
-    desc: Apply infrastructure changes (creates VM + triggers AAP)
-    dir: "{{.TF_DIR}}"
+  tf:plan:option-a:
+    desc: Plan with Option A (ephemeral keys)
+    dir: "{{.TF_AWS_DIR}}"
+    cmds:
+      - terraform plan -var="credential_option=A"
+
+  tf:plan:option-b:
+    desc: Plan with Option B (signed SSH)
+    dir: "{{.TF_AWS_DIR}}"
+    cmds:
+      - terraform plan -var="credential_option=B"
+
+  tf:apply:
+    desc: Apply infrastructure (creates VMs + triggers AAP)
+    dir: "{{.TF_AWS_DIR}}"
     cmds:
       - terraform apply
 
-  destroy:
+  tf:apply:auto:
+    desc: Apply infrastructure (auto-approve)
+    dir: "{{.TF_AWS_DIR}}"
+    cmds:
+      - terraform apply -auto-approve
+
+  tf:apply:option-a:
+    desc: Apply with Option A (ephemeral keys)
+    dir: "{{.TF_AWS_DIR}}"
+    cmds:
+      - terraform apply -var="credential_option=A"
+
+  tf:apply:option-b:
+    desc: Apply with Option B (signed SSH)
+    dir: "{{.TF_AWS_DIR}}"
+    cmds:
+      - terraform apply -var="credential_option=B"
+
+  tf:destroy:
     desc: Destroy all infrastructure
-    dir: "{{.TF_DIR}}"
+    dir: "{{.TF_AWS_DIR}}"
     cmds:
       - terraform destroy
 
-  output:
+  tf:output:
     desc: Show Terraform outputs
-    dir: "{{.TF_DIR}}"
+    dir: "{{.TF_AWS_DIR}}"
     cmds:
       - terraform output
 
-  # ---------------------------------------------------------------------------
-  # Action Management
-  # ---------------------------------------------------------------------------
-
-  invoke:
+  tf:invoke:
     desc: Manually invoke the AAP action
-    dir: "{{.TF_DIR}}"
+    dir: "{{.TF_AWS_DIR}}"
     cmds:
       - terraform apply -invoke action.aap_job_launch.configure_vm
 
-  # ---------------------------------------------------------------------------
+  # ===========================================================================
+  # Terraform - GCP (Legacy)
+  # ===========================================================================
+
+  tf:gcp:init:
+    desc: Initialize Terraform (GCP - legacy)
+    dir: "{{.TF_GCP_DIR}}"
+    cmds:
+      - terraform init
+
+  tf:gcp:plan:
+    desc: Plan GCP infrastructure (legacy)
+    dir: "{{.TF_GCP_DIR}}"
+    cmds:
+      - terraform plan
+
+  tf:gcp:apply:
+    desc: Apply GCP infrastructure (legacy)
+    dir: "{{.TF_GCP_DIR}}"
+    cmds:
+      - terraform apply
+
+  # ===========================================================================
   # Vault Operations
-  # ---------------------------------------------------------------------------
+  # ===========================================================================
 
   vault:status:
     desc: Check Vault SSH CA status
     cmds:
       - |
-        echo "=== Vault SSH CA Status ==="
+        echo "═══════════════════════════════════════════════════════════════"
+        echo " Vault SSH CA Status"
+        echo "═══════════════════════════════════════════════════════════════"
         echo ""
         echo "SSH secrets engine:"
-        vault secrets list | grep ssh || echo "  No SSH engine found"
+        vault secrets list | grep -E "^{{.VAULT_SSH_MOUNT}}/" || echo "  Not found at {{.VAULT_SSH_MOUNT}}/"
         echo ""
         echo "SSH signing roles:"
-        vault list ssh-client-signer/roles 2>/dev/null || echo "  No roles found"
+        vault list {{.VAULT_SSH_MOUNT}}/roles 2>/dev/null || echo "  No roles found"
         echo ""
         echo "AppRole auth:"
-        vault auth list | grep approle || echo "  No AppRole auth found"
+        vault auth list | grep approle || echo "  AppRole auth not enabled"
 
-  vault:test:
-    desc: Test SSH certificate signing (requires temp key)
+  vault:ca-key:
+    desc: Get Vault SSH CA public key
+    cmds:
+      - vault read -field=public_key {{.VAULT_SSH_MOUNT}}/config/ca
+
+  vault:test:issue:
+    desc: Test /ssh/issue endpoint (Option A)
+    cmds:
+      - |
+        echo "Testing SSH key issuance from Vault..."
+        RESULT=$(vault write -format=json {{.VAULT_SSH_MOUNT}}/issue/{{.VAULT_SSH_ROLE}} key_type=rsa key_bits=4096)
+        echo ""
+        echo "Success! Received:"
+        echo "  - Private key: $(echo $RESULT | jq -r '.data.private_key' | head -1)..."
+        echo "  - Signed cert: $(echo $RESULT | jq -r '.data.signed_key' | head -1)..."
+        echo ""
+        echo "Certificate details:"
+        echo "$RESULT" | jq -r '.data.signed_key' | ssh-keygen -L -f -
+
+  vault:test:sign:
+    desc: Test /ssh/sign endpoint (Option B)
     cmds:
       - |
         echo "Generating test key pair..."
@@ -142,39 +339,80 @@ tasks:
         ssh-keygen -t ed25519 -f "$TMPDIR/test_key" -N "" -q
         echo ""
         echo "Requesting signed certificate from Vault..."
-        vault write -field=signed_key ssh-client-signer/sign/awx-role \
+        vault write -field=signed_key {{.VAULT_SSH_MOUNT}}/sign/{{.VAULT_SSH_ROLE}} \
           public_key=@"$TMPDIR/test_key.pub" \
-          valid_principals=rhel \
           ttl=5m > "$TMPDIR/test_key-cert.pub"
         echo ""
         echo "Certificate details:"
         ssh-keygen -L -f "$TMPDIR/test_key-cert.pub"
-        echo ""
         rm -rf "$TMPDIR"
-        echo "Test certificate issued successfully!"
+        echo ""
+        echo "✓ Test certificate signed successfully!"
 
-  vault:ca-key:
-    desc: Get Vault SSH CA public key
-    cmds:
-      - vault read -field=public_key ssh-client-signer/config/ca
+  # ===========================================================================
+  # Demo Flows
+  # ===========================================================================
 
-  # ---------------------------------------------------------------------------
-  # Demo Flow
-  # ---------------------------------------------------------------------------
-
-  demo:
-    desc: Run the full demo (check → setup → apply)
+  demo:option-a:
+    desc: Full demo with Option A (ephemeral keys)
     cmds:
       - task: check
       - echo ""
-      - echo "=== Initializing Terraform ==="
-      - task: setup
+      - echo "═══════════════════════════════════════════════════════════════"
+      - echo " Demo: Option A - Vault Secrets Lookup (Ephemeral Keys)"
+      - echo "═══════════════════════════════════════════════════════════════"
+      - task: tf:init
+      - task: tf:apply:option-a
+
+  demo:option-b:
+    desc: Full demo with Option B (signed SSH)
+    cmds:
+      - task: check
       - echo ""
-      - echo "=== Deploying Infrastructure ==="
-      - task: apply
+      - echo "═══════════════════════════════════════════════════════════════"
+      - echo " Demo: Option B - Vault Signed SSH (Static Key)"
+      - echo "═══════════════════════════════════════════════════════════════"
+      - task: tf:init
+      - task: tf:apply:option-b
+
+  demo:full:
+    desc: Build images and deploy infrastructure
+    cmds:
+      - task: check
+      - echo ""
+      - echo "═══════════════════════════════════════════════════════════════"
+      - echo " Full Demo: Build Images + Deploy Infrastructure"
+      - echo "═══════════════════════════════════════════════════════════════"
+      - task: packer:vm:build:auto
+      - task: tf:init
+      - task: tf:apply
+
+  # ===========================================================================
+  # Cleanup
+  # ===========================================================================
 
   clean:
-    desc: Clean Terraform state and cache
-    dir: "{{.TF_DIR}}"
+    desc: Clean all Terraform state and caches
     cmds:
-      - rm -rf .terraform .terraform.lock.hcl terraform.tfstate* .terraform.tfstate.lock.info
+      - |
+        echo "Cleaning Terraform state..."
+        rm -rf {{.TF_AWS_DIR}}/.terraform {{.TF_AWS_DIR}}/.terraform.lock.hcl
+        rm -rf {{.TF_AWS_DIR}}/terraform.tfstate* {{.TF_AWS_DIR}}/.terraform.tfstate.lock.info
+        rm -rf {{.TF_GCP_DIR}}/.terraform {{.TF_GCP_DIR}}/.terraform.lock.hcl
+        rm -rf {{.TF_GCP_DIR}}/terraform.tfstate* {{.TF_GCP_DIR}}/.terraform.tfstate.lock.info
+        echo "Done!"
+
+  clean:packer:
+    desc: Clean Packer caches
+    cmds:
+      - |
+        echo "Cleaning Packer caches..."
+        rm -rf {{.PACKER_VM_DIR}}/packer_cache
+        rm -rf {{.PACKER_AAP_DIR}}/packer_cache
+        echo "Done!"
+
+  clean:all:
+    desc: Clean everything
+    cmds:
+      - task: clean
+      - task: clean:packer

@@ -1,6 +1,6 @@
-# Vault SSH CA with Ansible Automation Platform
+# AAP Vault SSH CA
 
-This repository demonstrates how to manage SSH credentials at scale using **HashiCorp Vault's SSH Certificate Authority (CA)** integrated with **Ansible Automation Platform (AAP)**.
+Manage SSH credentials at scale using **HashiCorp Vault's SSH Certificate Authority (CA)** integrated with **Ansible Automation Platform (AAP)**.
 
 Based on the HashiCorp blog post: [Managing Ansible Automation Platform (AAP) Credentials at Scale with Vault](https://www.hashicorp.com/en/blog/managing-ansible-automation-platform-aap-credentials-at-scale-with-vault)
 
@@ -15,11 +15,11 @@ Traditional SSH key management becomes unmanageable at scale. This solution uses
 
 ## Choose Your Approach
 
-This repository provides **two deployment options** depending on your environment and requirements:
+This repository provides **two deployment options** depending on your environment:
 
 | Option | Best For | Components |
 |--------|----------|------------|
-| [**AAP + Terraform Actions**](./aap-terraform-actions/) | Enterprise production deployments | Red Hat AAP, Terraform 1.14+, Cloud VMs |
+| [**AAP + Terraform Actions**](./aap-terraform-actions/) | Enterprise production deployments | Red Hat AAP, Terraform 1.14+, GCP/AWS VMs |
 | [**AWX + Minikube**](./awx-minikube-poc/) | Quick proof-of-concept, learning | AWX (free), Minikube, Docker containers |
 
 ---
@@ -28,25 +28,26 @@ This repository provides **two deployment options** depending on your environmen
 
 **Location:** [`aap-terraform-actions/`](./aap-terraform-actions/)
 
-This approach uses **Terraform Actions** (introduced in Terraform 1.14) to orchestrate the complete workflow:
+Uses **Terraform Actions** (Terraform 1.14+) to orchestrate:
 
-1. Terraform provisions a VM in your cloud provider
+1. Terraform provisions a VM in GCP
 2. Terraform triggers AAP via Actions after VM creation
 3. AAP authenticates to Vault using AppRole
-4. Vault issues a short-lived SSH certificate
-5. AAP connects to the new VM and installs a demo Streamlit application
-
-**Key Features:**
-- Uses Terraform Actions for declarative post-provisioning triggers
-- Integrates with Red Hat Ansible Automation Platform (enterprise)
-- Designed for cloud deployments (GCP, AWS, Azure)
-- Production-ready credential management
+4. Vault issues ephemeral SSH certificate
+5. AAP connects to the VM and configures it
 
 **Requirements:**
 - Terraform 1.14+
-- Red Hat Ansible Automation Platform subscription
-- HashiCorp Vault server
-- Cloud provider account (GCP, AWS, or Azure)
+- Red Hat Ansible Automation Platform
+- HashiCorp Vault with SSH CA
+- GCP or AWS account
+
+```bash
+cd aap-terraform-actions
+task check    # Verify prerequisites
+task setup    # Initialize Terraform
+task apply    # Deploy and trigger AAP
+```
 
 ---
 
@@ -54,18 +55,12 @@ This approach uses **Terraform Actions** (introduced in Terraform 1.14) to orche
 
 **Location:** [`awx-minikube-poc/`](./awx-minikube-poc/)
 
-This approach provides a local, self-contained environment for testing and learning:
+Local, self-contained environment for testing:
 
 1. Deploy Vault and AWX in Minikube
-2. Create Docker containers as target "VMs"
+2. Docker containers as target "VMs"
 3. Configure Vault SSH CA and AWX credentials
-4. Run playbooks using Vault-signed SSH certificates
-
-**Key Features:**
-- Runs entirely on your local machine
-- Uses AWX (free, open-source Ansible Tower)
-- Docker containers simulate target VMs
-- Perfect for demos and proof-of-concepts
+4. Run playbooks with Vault-signed certificates
 
 **Requirements:**
 - macOS or Linux
@@ -76,62 +71,69 @@ This approach provides a local, self-contained environment for testing and learn
 
 ## Architecture
 
-For detailed architecture documentation, see [docs.md](./docs.md).
-
 ```
-                                  ┌─────────────────┐
-                                  │  HashiCorp      │
-                                  │     Vault       │
-                                  │   (SSH CA)      │
-                                  └────────┬────────┘
-                                           │
-                         ┌─────────────────┼─────────────────┐
-                         │                 │                 │
-                         ▼                 │                 ▼
-              ┌──────────────────┐         │      ┌──────────────────┐
-              │   AAP/AWX        │◄────────┘      │  Target VMs      │
-              │   Controller     │                │  (trust CA)      │
-              └──────────────────┘                └──────────────────┘
-                         │                                 ▲
-                         │                                 │
-                         └─────────────────────────────────┘
-                              SSH with signed certificate
+                              ┌─────────────────┐
+                              │  HashiCorp      │
+                              │     Vault       │
+                              │   (SSH CA)      │
+                              └────────┬────────┘
+                                       │
+                     ┌─────────────────┼─────────────────┐
+                     │                 │                 │
+                     ▼                 │                 ▼
+          ┌──────────────────┐         │      ┌──────────────────┐
+          │   AAP/AWX        │◄────────┘      │  Target VMs      │
+          │   Controller     │                │  (trust CA)      │
+          └──────────────────┘                └──────────────────┘
+                     │                                 ▲
+                     │                                 │
+                     └─────────────────────────────────┘
+                          SSH with signed certificate
+```
+
+For detailed architecture, see [docs.md](./docs.md).
+
+## Vault Setup
+
+Before using either option, configure Vault:
+
+```bash
+# Enable SSH secrets engine
+vault secrets enable -path=ssh-client-signer ssh
+
+# Generate CA key pair
+vault write ssh-client-signer/config/ca generate_signing_key=true
+
+# Create signing role
+vault write ssh-client-signer/roles/aap-role \
+    algorithm_signer=rsa-sha2-256 \
+    allow_user_certificates=true \
+    allowed_users="*" \
+    default_user="rhel" \
+    ttl=30m
+
+# Enable AppRole auth
+vault auth enable approle
+
+# Create AppRole for AAP
+vault write auth/approle/role/aap-role \
+    token_policies=aap-ssh-policy \
+    token_ttl=1h
+
+# Apply policy
+vault policy write aap-ssh-policy shared/vault-config/lab-policy.hcl
+
+# Get credentials for AAP
+vault read auth/approle/role/aap-role/role-id
+vault write -f auth/approle/role/aap-role/secret-id
 ```
 
 ## Shared Components
 
-Common Vault configurations used by both approaches are in [`shared/`](./shared/):
+Common configurations in [`shared/`](./shared/):
 
-- **Vault Policy** - AppRole permissions for SSH signing
-- **SSH Role Configuration** - Certificate parameters and allowed principals
-
-## Quick Start
-
-### For Enterprise (AAP + Terraform)
-```bash
-cd aap-terraform-actions
-# Configure your variables
-cp terraform/terraform.tfvars.example terraform/terraform.tfvars
-# Deploy
-terraform -chdir=terraform init && terraform -chdir=terraform apply
-```
-
-### For Quick PoC (AWX + Minikube)
-```bash
-cd awx-minikube-poc
-# Start Minikube and deploy
-minikube start --driver=docker
-./setup.sh  # Coming soon - or follow the README
-```
-
-## Prerequisites
-
-Before starting, ensure you have a Vault server running with:
-- SSH secrets engine enabled at `ssh-client-signer`
-- AppRole authentication configured
-- The AAP/AWX `HashiCorp Vault Signed SSH` credential type configured
-
-See [docs.md](./docs.md) for Vault setup instructions.
+- **[lab-policy.hcl](./shared/vault-config/lab-policy.hcl)** - Vault policy for AppRole + SSH signing
+- **[get_ssh_keys.yml](./shared/vault-config/get_ssh_keys.yml)** - Example playbook to retrieve SSH keys
 
 ## License
 

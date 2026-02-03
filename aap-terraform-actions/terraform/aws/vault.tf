@@ -1,0 +1,167 @@
+# -----------------------------------------------------------------------------
+# Vault SSH CA Configuration
+#
+# Provisions Vault infrastructure for SSH certificate authentication:
+#   - SSH secrets engine
+#   - SSH CA signing key
+#   - SSH role for certificate issuance
+#   - AppRole auth method
+#   - Policy for SSH certificate issuance
+#
+# Two authentication modes supported:
+#   Option A: /ssh/issue/:role - generates ephemeral key pairs + certs
+#   Option B: /ssh/sign/:role  - signs existing public keys
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# SSH Secrets Engine
+# -----------------------------------------------------------------------------
+
+# Check if SSH mount already exists
+data "http" "ssh_mount_check" {
+  url = "${var.vault_addr}/v1/sys/mounts/${var.vault_ssh_mount_path}"
+
+  request_headers = merge(
+    { "X-Vault-Token" = var.vault_token },
+    var.vault_namespace != "" ? { "X-Vault-Namespace" = var.vault_namespace } : {}
+  )
+}
+
+locals {
+  ssh_mount_exists = data.http.ssh_mount_check.status_code == 200
+}
+
+resource "vault_mount" "ssh" {
+  count = local.ssh_mount_exists ? 0 : 1
+
+  path        = var.vault_ssh_mount_path
+  type        = "ssh"
+  description = "SSH certificate signing for AAP Terraform Actions"
+}
+
+# Check if CA already exists
+data "http" "vault_ca_check" {
+  url = "${var.vault_addr}/v1/${var.vault_ssh_mount_path}/public_key"
+
+  request_headers = var.vault_namespace != "" ? {
+    "X-Vault-Namespace" = var.vault_namespace
+  } : {}
+
+  depends_on = [vault_mount.ssh]
+}
+
+locals {
+  ca_exists = data.http.vault_ca_check.status_code == 200
+}
+
+resource "vault_ssh_secret_backend_ca" "ssh_ca" {
+  count = local.ca_exists ? 0 : 1
+
+  backend              = var.vault_ssh_mount_path
+  generate_signing_key = true
+
+  depends_on = [vault_mount.ssh]
+}
+
+# Get the CA public key (works whether we created it or it existed)
+data "http" "vault_ca_public_key" {
+  url = "${var.vault_addr}/v1/${var.vault_ssh_mount_path}/public_key"
+
+  request_headers = var.vault_namespace != "" ? {
+    "X-Vault-Namespace" = var.vault_namespace
+  } : {}
+
+  depends_on = [vault_ssh_secret_backend_ca.ssh_ca]
+}
+
+# -----------------------------------------------------------------------------
+# SSH Role for Certificate Issuance
+# -----------------------------------------------------------------------------
+
+resource "vault_ssh_secret_backend_role" "aap_ssh" {
+  name                    = var.vault_ssh_role
+  backend                 = var.vault_ssh_mount_path
+  key_type                = "ca"
+  algorithm_signer        = "rsa-sha2-256"
+  allow_user_certificates = true
+  allowed_users           = var.ssh_user
+  default_user            = var.ssh_user
+  ttl                     = "1800" # 30 minutes
+
+  # CRITICAL: permit-pty is required for SSH sessions to work
+  allowed_extensions = "permit-pty,permit-user-rc,permit-port-forwarding"
+  default_extensions = {
+    "permit-pty"     = ""
+    "permit-user-rc" = ""
+  }
+
+  depends_on = [vault_mount.ssh, vault_ssh_secret_backend_ca.ssh_ca]
+}
+
+# -----------------------------------------------------------------------------
+# AppRole Auth Method
+# -----------------------------------------------------------------------------
+
+# Check if AppRole auth is already enabled
+data "http" "approle_check" {
+  url = "${var.vault_addr}/v1/sys/auth"
+
+  request_headers = merge(
+    { "X-Vault-Token" = var.vault_token },
+    var.vault_namespace != "" ? { "X-Vault-Namespace" = var.vault_namespace } : {}
+  )
+}
+
+locals {
+  approle_exists = can(jsondecode(data.http.approle_check.response_body).data["approle/"])
+}
+
+resource "vault_auth_backend" "approle" {
+  count = local.approle_exists ? 0 : 1
+
+  type = "approle"
+  path = "approle"
+}
+
+# Policy for Option A: SSH certificate issuance via /ssh/issue (ephemeral keys)
+resource "vault_policy" "ssh_issue" {
+  name = "aap-ssh-issue"
+
+  policy = <<-EOT
+    # Allow issuing SSH certificates (generates key + signs)
+    path "${var.vault_ssh_mount_path}/issue/${var.vault_ssh_role}" {
+      capabilities = ["create", "update"]
+    }
+
+    # Allow signing SSH keys (signs existing key)
+    path "${var.vault_ssh_mount_path}/sign/${var.vault_ssh_role}" {
+      capabilities = ["create", "update"]
+    }
+  EOT
+}
+
+resource "vault_approle_auth_backend_role" "aap_ssh" {
+  backend        = "approle"
+  role_name      = "aap-ssh"
+  token_policies = [vault_policy.ssh_issue.name]
+  token_ttl      = 3600  # 1 hour
+  token_max_ttl  = 7200  # 2 hours
+
+  depends_on = [vault_auth_backend.approle]
+}
+
+resource "vault_approle_auth_backend_role_secret_id" "aap_ssh" {
+  backend   = "approle"
+  role_name = vault_approle_auth_backend_role.aap_ssh.role_name
+}
+
+# -----------------------------------------------------------------------------
+# Locals for Cross-Module Reference
+# -----------------------------------------------------------------------------
+
+locals {
+  vault_ca_public_key     = trimspace(data.http.vault_ca_public_key.response_body)
+  vault_approle_role_id   = vault_approle_auth_backend_role.aap_ssh.role_id
+  vault_approle_secret_id = vault_approle_auth_backend_role_secret_id.aap_ssh.secret_id
+  vault_ssh_role_name     = vault_ssh_secret_backend_role.aap_ssh.name
+}

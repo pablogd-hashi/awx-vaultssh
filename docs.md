@@ -98,7 +98,7 @@ Vault Server
 ├── Secrets Engines
 │   └── SSH (path: ssh-client-signer)
 │       └── Roles
-│           └── awx-role (certificate signing role)
+│           └── aap-role (certificate signing role)
 │
 └── Policies
     └── lab-policy (permissions for SSH signing)
@@ -129,7 +129,7 @@ The `trusted-user-ca-keys.pem` file contains Vault's SSH CA public key.
 
 4. **Certificate Request** - AAP sends its public key to Vault for signing:
    ```
-   POST /v1/ssh-client-signer/sign/awx-role
+   POST /v1/ssh-client-signer/sign/aap-role
    {
      "public_key": "<AAP's public key>",
      "valid_principals": "rhel,ubuntu"
@@ -168,7 +168,7 @@ vault write ssh-client-signer/config/ca generate_signing_key=true
 ### Create Signing Role
 
 ```bash
-vault write ssh-client-signer/roles/awx-role - <<EOF
+vault write ssh-client-signer/roles/aap-role - <<EOF
 {
   "algorithm_signer": "rsa-sha2-256",
   "allow_user_certificates": true,
@@ -203,15 +203,15 @@ EOF
 vault auth enable approle
 
 # Create role for AAP
-vault write auth/approle/role/awx-role \
+vault write auth/approle/role/aap-role \
     token_policies=lab-policy \
     token_ttl=1h \
     token_max_ttl=4h \
     secret_id_ttl=24h
 
 # Get credentials
-vault read auth/approle/role/awx-role/role-id
-vault write -f auth/approle/role/awx-role/secret-id
+vault read auth/approle/role/aap-role/role-id
+vault write -f auth/approle/role/aap-role/secret-id
 ```
 
 ### Vault Policy
@@ -220,57 +220,67 @@ vault write -f auth/approle/role/awx-role/secret-id
 # shared/vault-config/lab-policy.hcl
 
 # AppRole authentication
-path "auth/approle/role/awx-role/role-id" {
+path "auth/approle/role/aap-role/role-id" {
   capabilities = ["read"]
 }
 
-path "auth/approle/role/awx-role/secret-id" {
+path "auth/approle/role/aap-role/secret-id" {
   capabilities = ["update"]
 }
 
 # SSH certificate signing
-path "ssh-client-signer/sign/awx-role" {
+path "ssh-client-signer/sign/aap-role" {
   capabilities = ["create", "update"]
 }
 
-path "ssh-client-signer/issue/awx-role" {
+path "ssh-client-signer/issue/aap-role" {
   capabilities = ["create", "update"]
 }
 ```
 
 ---
 
-## AAP Credential Types
+## AAP Credential Configuration
 
-### HashiCorp Vault Signed SSH Credential
+This demo uses **HashiCorp Vault Secret Lookup** credential type with playbook-based SSH key generation. This approach provides **true ephemeral keys** - Vault generates both the private key and signed certificate on each job run.
 
-AAP uses a special credential type that integrates with Vault:
+### Step 1: Create Vault Secret Lookup Credential
 
-**Credential Type:** `HashiCorp Vault Signed SSH`
+In AAP, go to **Resources → Credentials → Add**:
 
-**Required Fields:**
-- **Vault Server URL** - e.g., `https://vault.example.com:8200`
-- **Role ID** - AppRole role_id
-- **Secret ID** - AppRole secret_id
-- **SSH Signing Path** - `ssh-client-signer`
-- **Role Name** - `awx-role`
+| Field | Value |
+|-------|-------|
+| **Name** | `Vault AppRole` |
+| **Credential Type** | `HashiCorp Vault Secret Lookup` |
+| **Server URL** | `https://your-vault.example.com:8200` |
+| **AppRole role_id** | *(from `vault read auth/approle/role/aap-role/role-id`)* |
+| **AppRole secret_id** | *(from `vault write -f auth/approle/role/aap-role/secret-id`)* |
+| **Path to Auth** | `approle` |
+| **API Version** | `v1` |
 
-### Machine Credential with External Secret
+### Step 2: Create Job Template
 
-The Machine credential references the Vault credential for the signed certificate:
+In AAP, go to **Resources → Templates → Add → Job Template**:
 
-**Credential Type:** `Machine`
+| Field | Value |
+|-------|-------|
+| **Name** | `Vault SSH Demo` |
+| **Inventory** | `Demo Inventory` (or create one) |
+| **Project** | Your project with the playbook |
+| **Playbook** | `playbooks/vault-ssh-configure.yml` |
+| **Credentials** | Select `Vault AppRole` created above |
+| **Extra Variables** | *(leave empty - Terraform passes these)* |
 
-**Fields:**
-- **Username** - Must match allowed principals (e.g., `rhel`)
-- **SSH Private Key** - The private key AAP uses
-- **Signed SSH Certificate** - Linked to Vault credential (external secret)
+### How It Works
 
-**External Secret Configuration:**
-- **Unsigned Public Key** - Public key corresponding to the private key
-- **Path to Secret** - `ssh-client-signer`
-- **Role Name** - `awx-role`
-- **Valid Principals** - `rhel,ubuntu`
+1. Terraform triggers AAP job with `target_hosts`, `vault_addr`, `vault_ssh_role`, `ssh_user`
+2. AAP injects `vault_approle_role_id` and `vault_approle_secret_id` from the credential
+3. Playbook authenticates to Vault using AppRole
+4. Playbook calls Vault `/issue/` endpoint → Vault generates ephemeral private key + signed cert
+5. Playbook uses `ansible.netcommon.cli_command` or writes keys to temp file and SSHs to target
+6. Keys are discarded after playbook completes
+
+**No static SSH keys stored anywhere** - true zero-trust.
 
 ---
 
@@ -287,7 +297,7 @@ The default TTL is 30 minutes. Consider:
 
 Configure `allowed_users` to restrict which usernames can be in certificates:
 ```bash
-vault write ssh-client-signer/roles/awx-role allowed_users="ansible,deploy"
+vault write ssh-client-signer/roles/aap-role allowed_users="ansible,deploy"
 ```
 
 ### Network Security
