@@ -1,0 +1,222 @@
+---
+# =============================================================================
+# Option B: Vault Signed SSH (Static Key in AAP)
+# =============================================================================
+#
+# This playbook uses Vault's /ssh/sign endpoint to sign a pre-existing SSH
+# public key stored in AAP. The private key lives in AAP's credential store.
+#
+# Flow:
+#   1. Authenticate to Vault via AppRole
+#   2. Read the static SSH public key from AAP credential (injected as var)
+#   3. POST /ssh/sign/:role → get signed certificate for the public key
+#   4. SSH to targets using static private key + fresh signed cert
+#   5. Certificate expires per Vault role TTL (e.g., 30 minutes)
+#
+# Variable sources:
+#   From Terraform extra_vars:
+#     - target_hosts            VM IP addresses (comma-separated)
+#     - ssh_user                SSH username (default: ansible)
+#     - vault_addr              Vault server URL
+#     - vault_namespace         Vault namespace (empty for OSS, "admin" for HCP)
+#     - vault_ssh_mount         Vault SSH engine path (default: ssh)
+#     - vault_ssh_role          Vault SSH CA role name
+#     - vault_approle_role_id   AppRole role ID
+#     - vault_approle_secret_id AppRole secret ID
+#
+#   From AAP Machine Credential (injected automatically):
+#     - ansible_ssh_private_key_file  Path to private key (AAP manages this)
+#     - aap_ssh_public_key            Public key to sign (custom credential var)
+#
+# Security advantages:
+#   - Private key securely stored in AAP (encrypted at rest)
+#   - Certificates are short-lived (default 30 min)
+#   - No need to distribute private keys to target hosts
+#   - Supports existing key management workflows
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Play 1: Get signed certificate from Vault
+# ---------------------------------------------------------------------------
+- name: "[Option B] Sign SSH public key with Vault CA"
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    _target_list: "{{ target_hosts.split(',') | map('trim') | list }}"
+    _ssh_user: "{{ ssh_user | default('ansible') }}"
+    _vault_ssh_mount: "{{ vault_ssh_mount | default('ssh') }}"
+    # Path where AAP stores the injected private key
+    _private_key_path: "{{ ansible_ssh_private_key_file | default('/tmp/aap-ssh-key') }}"
+    # Cert will be written alongside the private key
+    _cert_path: "{{ _private_key_path }}-cert.pub"
+
+  tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - target_hosts is defined and target_hosts | length > 0
+          - vault_addr is defined
+          - vault_approle_role_id is defined
+          - vault_approle_secret_id is defined
+          - vault_ssh_role is defined
+        fail_msg: >-
+          Missing required variables. Ensure Terraform passes all required
+          variables via extra_vars and AAP injects the SSH credential.
+
+    - name: Check for SSH public key
+      ansible.builtin.stat:
+        path: "{{ _private_key_path }}.pub"
+      register: pubkey_stat
+
+    - name: Generate public key from private key if needed
+      ansible.builtin.command:
+        cmd: "ssh-keygen -y -f {{ _private_key_path }}"
+      register: generated_pubkey
+      when: not pubkey_stat.stat.exists
+      no_log: true
+
+    - name: Read existing public key
+      ansible.builtin.slurp:
+        src: "{{ _private_key_path }}.pub"
+      register: existing_pubkey
+      when: pubkey_stat.stat.exists
+      no_log: true
+
+    - name: Set public key content
+      ansible.builtin.set_fact:
+        _ssh_public_key: "{{ existing_pubkey.content | b64decode | trim if pubkey_stat.stat.exists else generated_pubkey.stdout | trim }}"
+      no_log: true
+
+    - name: Set Vault namespace header
+      ansible.builtin.set_fact:
+        _vault_headers: "{{ {'X-Vault-Namespace': vault_namespace} if vault_namespace | default('') | length > 0 else {} }}"
+
+    - name: Authenticate to Vault via AppRole
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/auth/approle/login"
+        method: POST
+        headers: "{{ _vault_headers }}"
+        body_format: json
+        body:
+          role_id: "{{ vault_approle_role_id }}"
+          secret_id: "{{ vault_approle_secret_id }}"
+        status_code: 200
+        validate_certs: "{{ vault_validate_certs | default(true) }}"
+      register: vault_login
+      no_log: true
+
+    - name: Sign SSH public key with Vault CA
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/{{ _vault_ssh_mount }}/sign/{{ vault_ssh_role }}"
+        method: POST
+        headers: "{{ _vault_headers | combine({'X-Vault-Token': vault_login.json.auth.client_token}) }}"
+        body_format: json
+        body:
+          public_key: "{{ _ssh_public_key }}"
+        status_code: 200
+        validate_certs: "{{ vault_validate_certs | default(true) }}"
+      register: vault_sign
+      no_log: true
+
+    - name: Write signed certificate
+      ansible.builtin.copy:
+        content: "{{ vault_sign.json.data.signed_key }}"
+        dest: "{{ _cert_path }}"
+        mode: "0644"
+      no_log: true
+
+    - name: Add targets to inventory with signed credentials
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: target
+        ansible_host: "{{ item }}"
+        ansible_user: "{{ _ssh_user }}"
+        ansible_ssh_private_key_file: "{{ _private_key_path }}"
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o CertificateFile={{ _cert_path }}"
+      loop: "{{ _target_list }}"
+
+# ---------------------------------------------------------------------------
+# Play 2: Configure target VMs
+# ---------------------------------------------------------------------------
+- name: "[Option B] Configure target VMs"
+  hosts: target
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Wait for SSH to become available
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+    - name: Display connection info
+      ansible.builtin.debug:
+        msg: "Connected to {{ inventory_hostname }} using Vault-signed SSH certificate (Option B)"
+
+    - name: Install base packages (RHEL/Rocky/AlmaLinux)
+      ansible.builtin.dnf:
+        name:
+          - python3
+          - python3-pip
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Install base packages (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-venv
+        state: present
+        update_cache: true
+      when: ansible_os_family == "Debian"
+
+    - name: Create proof-of-concept file
+      ansible.builtin.copy:
+        content: |
+          Vault SSH CA - Option B: Signed SSH
+          ====================================
+          Host: {{ inventory_hostname }}
+          User: {{ ansible_user }}
+          Time: {{ ansible_date_time.iso8601 }}
+          Credential Option: B (Signed SSH via /ssh/sign)
+
+          This file was created by AAP using a static SSH private key
+          stored in AAP, with the public key signed by HashiCorp Vault CA.
+          The certificate is short-lived and automatically expires.
+        dest: /tmp/vault-ssh-demo.txt
+        mode: '0644'
+
+    - name: Success message
+      ansible.builtin.debug:
+        msg:
+          - "============================================"
+          - "SUCCESS: Option B - Signed SSH"
+          - "============================================"
+          - "Target: {{ inventory_hostname }}"
+          - "User: {{ ansible_user }}"
+          - "Demo file: /tmp/vault-ssh-demo.txt"
+          - "============================================"
+
+# ---------------------------------------------------------------------------
+# Play 3: Clean up signed certificate (optional)
+# ---------------------------------------------------------------------------
+- name: "[Option B] Clean up signed certificate"
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    _private_key_path: "{{ ansible_ssh_private_key_file | default('/tmp/aap-ssh-key') }}"
+    _cert_path: "{{ _private_key_path }}-cert.pub"
+
+  tasks:
+    - name: Remove signed certificate (private key remains in AAP)
+      ansible.builtin.file:
+        path: "{{ _cert_path }}"
+        state: absent
+      ignore_errors: true

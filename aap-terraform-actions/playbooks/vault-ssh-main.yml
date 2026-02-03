@@ -1,0 +1,41 @@
+---
+# =============================================================================
+# Vault SSH CA - Main Playbook (Router)
+# =============================================================================
+#
+# This playbook routes to the appropriate credential option based on the
+# 'credential_option' variable passed from Terraform.
+#
+# Options:
+#   A - Vault Secrets Lookup (ephemeral keys via /ssh/issue)
+#   B - Vault Signed SSH (static key in AAP, signed via /ssh/sign)
+#
+# Usage:
+#   Set credential_option="A" or credential_option="B" in Terraform tfvars
+# =============================================================================
+
+- name: "Vault SSH CA - Select Credential Option"
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  tasks:
+    - name: Display credential option
+      ansible.builtin.debug:
+        msg: "Using credential option: {{ credential_option | default('A') }}"
+
+    - name: Validate credential option
+      ansible.builtin.assert:
+        that:
+          - credential_option is defined
+          - credential_option in ['A', 'B']
+        fail_msg: "credential_option must be 'A' (ephemeral keys) or 'B' (signed SSH)"
+
+# Import the appropriate playbook based on option
+- name: "Import Option A playbook (ephemeral keys)"
+  ansible.builtin.import_playbook: option-a-ephemeral-keys.yml
+  when: credential_option | default('A') == 'A'
+
+- name: "Import Option B playbook (signed SSH)"
+  ansible.builtin.import_playbook: option-b-signed-ssh.yml
+  when: credential_option | default('A') == 'B'

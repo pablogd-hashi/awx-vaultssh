@@ -1,0 +1,165 @@
+---
+# =============================================================================
+# Option A: Vault Secrets Lookup (Ephemeral Keys)
+# =============================================================================
+#
+# This playbook uses Vault's /ssh/issue endpoint to generate ephemeral SSH
+# key pairs for each connection. No static keys are stored anywhere.
+#
+# Flow:
+#   1. Authenticate to Vault via AppRole
+#   2. For each target: POST /ssh/issue/:role → get private key + signed cert
+#   3. SSH to targets using ephemeral credentials
+#   4. Securely shred all credentials after use
+#
+# Variable sources (all passed via Terraform extra_vars):
+#   - target_hosts            VM IP addresses (comma-separated)
+#   - ssh_user                SSH username (default: ansible)
+#   - vault_addr              Vault server URL
+#   - vault_namespace         Vault namespace (empty for OSS, "admin" for HCP)
+#   - vault_ssh_mount         Vault SSH engine path (default: ssh)
+#   - vault_ssh_role          Vault SSH CA role name
+#   - vault_approle_role_id   AppRole role ID
+#   - vault_approle_secret_id AppRole secret ID
+#
+# Security advantages:
+#   - No static SSH keys stored in AAP
+#   - Keys exist only during playbook execution
+#   - Automatic credential rotation per run
+#   - Keys are shredded after use
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Play 1: Obtain ephemeral SSH credentials from Vault
+# ---------------------------------------------------------------------------
+- name: "[Option A] Obtain ephemeral SSH credentials from Vault"
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    _target_list: "{{ target_hosts.split(',') | map('trim') | list }}"
+    _ssh_user: "{{ ssh_user | default('ansible') }}"
+    _vault_ssh_mount: "{{ vault_ssh_mount | default('ssh') }}"
+
+  tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - target_hosts is defined and target_hosts | length > 0
+          - vault_addr is defined
+          - vault_approle_role_id is defined
+          - vault_approle_secret_id is defined
+          - vault_ssh_role is defined
+        fail_msg: >-
+          Missing required variables. Ensure Terraform passes all required
+          variables via extra_vars: target_hosts, vault_addr, vault_ssh_role,
+          vault_approle_role_id, vault_approle_secret_id.
+
+    - name: Set Vault namespace header
+      ansible.builtin.set_fact:
+        _vault_headers: "{{ {'X-Vault-Namespace': vault_namespace} if vault_namespace | default('') | length > 0 else {} }}"
+
+    - name: Authenticate to Vault via AppRole
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/auth/approle/login"
+        method: POST
+        headers: "{{ _vault_headers }}"
+        body_format: json
+        body:
+          role_id: "{{ vault_approle_role_id }}"
+          secret_id: "{{ vault_approle_secret_id }}"
+        status_code: 200
+        validate_certs: "{{ vault_validate_certs | default(true) }}"
+      register: vault_login
+      no_log: true
+
+    - name: Issue SSH credentials for each target
+      include_tasks: tasks/issue-ssh-credentials.yml
+      loop: "{{ _target_list }}"
+      loop_control:
+        loop_var: target_ip
+
+# ---------------------------------------------------------------------------
+# Play 2: Configure target VMs
+# ---------------------------------------------------------------------------
+- name: "[Option A] Configure target VMs"
+  hosts: target
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Wait for SSH to become available
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+    - name: Display connection info
+      ansible.builtin.debug:
+        msg: "Connected to {{ inventory_hostname }} using Vault-issued ephemeral SSH credentials"
+
+    - name: Install base packages (RHEL/Rocky/AlmaLinux)
+      ansible.builtin.dnf:
+        name:
+          - python3
+          - python3-pip
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Install base packages (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-venv
+        state: present
+        update_cache: true
+      when: ansible_os_family == "Debian"
+
+    - name: Create proof-of-concept file
+      ansible.builtin.copy:
+        content: |
+          Vault SSH CA - Option A: Ephemeral Keys
+          ========================================
+          Host: {{ inventory_hostname }}
+          User: {{ ansible_user }}
+          Time: {{ ansible_date_time.iso8601 }}
+          Credential Option: A (Ephemeral Keys via /ssh/issue)
+
+          This file was created by AAP using ephemeral SSH credentials
+          generated and signed by HashiCorp Vault. No static SSH keys
+          were used or stored.
+        dest: /tmp/vault-ssh-demo.txt
+        mode: '0644'
+
+    - name: Success message
+      ansible.builtin.debug:
+        msg:
+          - "============================================"
+          - "SUCCESS: Option A - Ephemeral Keys"
+          - "============================================"
+          - "Target: {{ inventory_hostname }}"
+          - "User: {{ ansible_user }}"
+          - "Demo file: /tmp/vault-ssh-demo.txt"
+          - "============================================"
+
+# ---------------------------------------------------------------------------
+# Play 3: Clean up ephemeral credentials
+# ---------------------------------------------------------------------------
+- name: "[Option A] Shred ephemeral SSH credentials"
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  tasks:
+    - name: Shred and remove SSH credentials
+      ansible.builtin.shell: |
+        for dir in /tmp/vault-ssh-*; do
+          if [ -d "$dir" ]; then
+            shred -u "$dir"/id_rsa 2>/dev/null || true
+            rm -rf "$dir"
+          fi
+        done
+      ignore_errors: true
