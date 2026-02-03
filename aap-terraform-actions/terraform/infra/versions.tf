@@ -1,0 +1,28 @@
+# -----------------------------------------------------------------------------
+# Terraform Configuration - Infrastructure
+# -----------------------------------------------------------------------------
+# Requires Terraform 1.14+ for Actions support.
+# -----------------------------------------------------------------------------
+
+terraform {
+  required_version = ">= 1.14.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    vault = {
+      source  = "hashicorp/vault"
+      version = "~> 4.0"
+    }
+    aap = {
+      source  = "ansible/aap"
+      version = "~> 1.0"
+    }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
+  }
+}

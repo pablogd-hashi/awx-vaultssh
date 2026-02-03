@@ -1,0 +1,21 @@
+# -----------------------------------------------------------------------------
+# AAP Controller Variables
+# -----------------------------------------------------------------------------
+# Copy this file to terraform.tfvars and update values.
+# -----------------------------------------------------------------------------
+
+aws_region       = "us-east-1"
+instance_type    = "m6a.xlarge"
+name_prefix      = "aap"
+root_volume_size = 100
+
+# Network access - IMPORTANT: restrict in production!
+allowed_ssh_cidrs   = ["0.0.0.0/0"]
+allowed_https_cidrs = ["0.0.0.0/0"]
+
+# Additional tags
+tags = {
+  Project     = "vault-ssh-demo"
+  Environment = "demo"
+  ManagedBy   = "terraform"
+}
