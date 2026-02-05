@@ -265,11 +265,11 @@ ssh -i /path/to/key -i /path/to/cert.pub ansible@<vm-ip>
 │                      TRADITIONAL SSH                                     │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
-│  ❌ Static private keys scattered across systems                        │
-│  ❌ Public keys in authorized_keys (manual management)                  │
-│  ❌ Keys never expire (unless manually rotated)                         │
-│  ❌ Key revocation is painful                                           │
-│  ❌ Audit trail: "someone with this key logged in"                      │
+│  x Static private keys scattered across systems                        │
+│  x Public keys in authorized_keys (manual management)                  │
+│  x Keys never expire (unless manually rotated)                         │
+│  x Key revocation is painful                                           │
+│  x Audit trail: "someone with this key logged in"                      │
 │                                                                          │
 │  AAP Credential Store                    Target VMs                     │
 │  ┌─────────────────────┐                ┌─────────────────────┐        │
@@ -283,11 +283,11 @@ ssh -i /path/to/key -i /path/to/cert.pub ansible@<vm-ip>
 │                       VAULT SSH CA                                       │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
-│  ✅ Short-lived certificates (30 min default)                           │
-│  ✅ VMs trust the CA, not individual keys                               │
-│  ✅ Automatic expiration - no manual revocation needed                  │
-│  ✅ Certificates can encode identity (principal)                        │
-│  ✅ Full audit trail in Vault                                           │
+│  v Short-lived certificates (30 min default)                           │
+│  v VMs trust the CA, not individual keys                               │
+│  v Automatic expiration - no manual revocation needed                  │
+│  v Certificates can encode identity (principal)                        │
+│  v Full audit trail in Vault                                           │
 │                                                                          │
 │  Vault SSH CA                            Target VMs                     │
 │  ┌─────────────────────┐                ┌─────────────────────┐        │
