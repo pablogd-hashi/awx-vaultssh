@@ -18,7 +18,7 @@ terraform {
     }
     aap = {
       source  = "ansible/aap"
-      version = "~> 1.0"
+      version = ">= 1.4.0"
     }
     tls = {
       source  = "hashicorp/tls"

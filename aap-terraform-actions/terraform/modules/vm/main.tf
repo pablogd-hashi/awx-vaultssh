@@ -38,7 +38,7 @@ locals {
 # -----------------------------------------------------------------------------
 
 resource "aws_security_group" "vm" {
-  name        = "${var.name_prefix}-vm-sg"
+  name_prefix = "${var.name_prefix}-vm-sg-"
   description = "Security group for ${var.name_prefix} VMs"
   vpc_id      = var.vpc_id
 

@@ -68,14 +68,9 @@ variable "associate_public_ip" {
 }
 
 variable "allowed_ssh_cidrs" {
-  description = "CIDR blocks allowed to SSH"
+  description = "CIDR blocks allowed to SSH (empty = no SSH access)"
   type        = list(string)
-  default     = ["0.0.0.0/0"]
-
-  validation {
-    condition     = length(var.allowed_ssh_cidrs) > 0
-    error_message = "allowed_ssh_cidrs must contain at least one CIDR block."
-  }
+  default     = []
 }
 
 variable "ssh_user" {

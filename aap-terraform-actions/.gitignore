@@ -1,0 +1,38 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Credentials - NEVER commit these
+terraform.tfvars
+*.auto.tfvars
+secrets.tfvars
+
+# Packer
+packer_cache/
+*.box
+
+# SSH keys
+*.pem
+*.key
+id_*
+!id_*.pub
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

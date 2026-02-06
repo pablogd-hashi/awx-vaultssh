@@ -60,12 +60,17 @@ build {
     ]
   }
 
-  # Install required packages
+  # Install required packages and pre-install Streamlit (skip full update for faster builds)
   provisioner "shell" {
     inline = [
       "echo 'Installing required packages...'",
-      "sudo dnf update -y",
-      "sudo dnf install -y python3 python3-pip openssh-server"
+      "sudo dnf install -y python3 python3-pip openssh-server",
+
+      "echo 'Pre-installing Streamlit and dependencies...'",
+      "sudo mkdir -p /opt/streamlit-demo",
+      "sudo python3 -m venv /opt/streamlit-demo/venv",
+      "sudo /opt/streamlit-demo/venv/bin/pip install --upgrade pip",
+      "sudo /opt/streamlit-demo/venv/bin/pip install streamlit pandas plotly"
     ]
   }
 
