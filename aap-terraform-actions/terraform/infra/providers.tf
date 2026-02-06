@@ -1,17 +1,14 @@
 # -----------------------------------------------------------------------------
-# Provider Configuration - Infrastructure
+# Providers
 # -----------------------------------------------------------------------------
 
 provider "aws" {
   region = var.aws_region
-
-  default_tags {
-    tags = var.tags
-  }
 }
 
 provider "vault" {
-  address   = var.vault_address
+  address   = var.vault_addr
+  token     = var.vault_token != "" ? var.vault_token : null
   namespace = var.vault_namespace != "" ? var.vault_namespace : null
 }
 

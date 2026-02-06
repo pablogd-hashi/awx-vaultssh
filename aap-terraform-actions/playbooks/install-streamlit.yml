@@ -37,60 +37,22 @@
           - "Environment: {{ environment | default('N/A') }}"
 
     # -------------------------------------------------------------------------
-    # Install System Dependencies
+    # Check Pre-installed Packages (from Packer golden image)
     # -------------------------------------------------------------------------
 
-    - name: Install required packages (RHEL/Fedora)
-      ansible.builtin.dnf:
-        name:
-          - python3
-          - python3-pip
-          - python3-devel
-          - gcc
-        state: present
-      when: ansible_os_family == "RedHat"
+    - name: Check if Streamlit is pre-installed
+      ansible.builtin.stat:
+        path: "{{ venv_dir }}/bin/streamlit"
+      register: streamlit_check
 
-    - name: Install required packages (Debian/Ubuntu)
-      ansible.builtin.apt:
-        name:
-          - python3
-          - python3-pip
-          - python3-venv
-          - python3-dev
-          - build-essential
-        state: present
-        update_cache: yes
-      when: ansible_os_family == "Debian"
-
-    # -------------------------------------------------------------------------
-    # Create Application Directory
-    # -------------------------------------------------------------------------
-
-    - name: Create application directory
+    - name: Set ownership of pre-installed app directory
       ansible.builtin.file:
         path: "{{ app_dir }}"
         state: directory
         owner: "{{ ssh_user }}"
         group: "{{ ssh_user }}"
-        mode: '0755'
-
-    # -------------------------------------------------------------------------
-    # Create Python Virtual Environment
-    # -------------------------------------------------------------------------
-
-    - name: Create Python virtual environment
-      ansible.builtin.command:
-        cmd: python3 -m venv {{ venv_dir }}
-        creates: "{{ venv_dir }}/bin/activate"
-
-    - name: Install Streamlit in virtual environment
-      ansible.builtin.pip:
-        name:
-          - streamlit
-          - pandas
-          - plotly
-        virtualenv: "{{ venv_dir }}"
-        state: present
+        recurse: yes
+      when: streamlit_check.stat.exists
 
     # -------------------------------------------------------------------------
     # Create Demo Application
