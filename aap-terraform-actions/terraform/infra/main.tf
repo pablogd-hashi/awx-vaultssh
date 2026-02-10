@@ -1,6 +1,8 @@
-# -----------------------------------------------------------------------------
 # Main Configuration
-# -----------------------------------------------------------------------------
+#
+# AWS infrastructure for Vault SSH CA demo.
+# Vault configuration is in vault.tf
+# AAP integration is in aap.tf
 
 # -----------------------------------------------------------------------------
 # Networking
@@ -47,21 +49,7 @@ resource "aws_route_table_association" "public" {
 }
 
 # -----------------------------------------------------------------------------
-# Vault SSH CA
-# -----------------------------------------------------------------------------
-
-module "vault_ssh_ca" {
-  source = "../modules/vault-ssh-ca"
-
-  ssh_mount_path    = var.vault_ssh_mount
-  ssh_role_name     = var.vault_ssh_role
-  approle_role_name = "aap-${var.name_prefix}"
-  allowed_users     = [var.ssh_user]
-  default_user      = var.ssh_user
-}
-
-# -----------------------------------------------------------------------------
-# VM
+# Compute VM
 # -----------------------------------------------------------------------------
 
 module "vm" {
@@ -76,59 +64,26 @@ module "vm" {
   allowed_ssh_cidrs = var.allowed_cidrs
   ssh_user          = var.ssh_user
 
-  depends_on = [module.vault_ssh_ca]
+  # Vault SSH CA must be created before VMs (they need the CA public key)
+  depends_on = [data.http.vault_ca_public_key]
 }
 
 # -----------------------------------------------------------------------------
-# AAP Inventory & Hosts
+# AAP Trigger
 # -----------------------------------------------------------------------------
-
-resource "aap_inventory" "main" {
-  name        = "${var.name_prefix}-inventory"
-  description = "Managed by Terraform"
-}
-
-resource "aap_host" "vm" {
-  for_each = module.vm.inventory
-
-  inventory_id = aap_inventory.main.id
-  name         = each.key
-  variables = jsonencode({
-    ansible_host = each.value.ansible_host
-    ansible_user = each.value.ansible_user
-  })
-}
-
-# -----------------------------------------------------------------------------
-# Terraform Action - Launch AAP Job
-# -----------------------------------------------------------------------------
-
-action "aap_job_launch" "configure_vms" {
-  config {
-    job_template_id     = var.aap_job_template_id
-    wait_for_completion = true
-
-    extra_vars = jsonencode({
-      target_hosts            = join(",", module.vm.public_ips)
-      ssh_user                = var.ssh_user
-      vault_addr              = var.vault_addr
-      vault_namespace         = var.vault_namespace
-      vault_ssh_role          = module.vault_ssh_ca.ssh_role_name
-      vault_approle_role_id   = module.vault_ssh_ca.approle_role_id
-      vault_approle_secret_id = module.vault_ssh_ca.approle_secret_id
-    })
-  }
-}
+# Triggers Ansible configuration after VM is ready.
+# Using terraform_data resource to bind action_trigger to module completion.
 
 resource "terraform_data" "aap_trigger" {
+  # Track VM IPs - if any change, re-trigger configuration
   input = join(",", module.vm.public_ips)
 
-  depends_on = [module.vm, aap_host.vm]
+  depends_on = [module.vm]
 
   lifecycle {
     action_trigger {
       events  = [after_create, after_update]
-      actions = [action.aap_job_launch.configure_vms]
+      actions = [action.aap_job_launch.configure_vm]
     }
   }
 }

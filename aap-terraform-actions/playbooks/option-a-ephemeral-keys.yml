@@ -1,31 +1,38 @@
 ---
 # =============================================================================
-# Option A: Vault Secrets Lookup (Ephemeral Keys)
+# Option A: Vault SSH CA with Ephemeral Keys
 # =============================================================================
 #
 # This playbook uses Vault's /ssh/issue endpoint to generate ephemeral SSH
 # key pairs for each connection. No static keys are stored anywhere.
 #
 # Flow:
-#   1. Authenticate to Vault via AppRole
+#   1. Authenticate to Vault via AppRole (credentials from AAP Vault Credential)
 #   2. For each target: POST /ssh/issue/:role → get private key + signed cert
 #   3. SSH to targets using ephemeral credentials
 #   4. Securely shred all credentials after use
 #
-# Variable sources (all passed via Terraform extra_vars):
-#   - target_hosts            VM IP addresses (comma-separated)
-#   - ssh_user                SSH username (default: ansible)
-#   - vault_addr              Vault server URL
-#   - vault_namespace         Vault namespace (empty for OSS, "admin" for HCP)
-#   - vault_ssh_mount         Vault SSH engine path (default: ssh)
-#   - vault_ssh_role          Vault SSH CA role name
-#   - vault_approle_role_id   AppRole role ID
-#   - vault_approle_secret_id AppRole secret ID
+# Variable sources:
+#   FROM TERRAFORM (extra_vars):
+#     - target_hosts       VM IP addresses (comma-separated)
+#     - ssh_user           SSH username (default: ec2-user)
+#     - vault_addr         Vault server URL
+#     - vault_namespace    Vault namespace (empty for OSS, "admin" for HCP)
+#     - vault_ssh_role     Vault SSH CA role name
+#
+#   FROM AAP VAULT CREDENTIAL (environment variables):
+#     - VAULT_ROLE_ID      AppRole role ID (injected by AAP)
+#     - VAULT_SECRET_ID    AppRole secret ID (injected by AAP)
+#
+# AAP Setup:
+#   1. Create "HashiCorp Vault Secret Lookup" credential with AppRole creds
+#   2. Attach credential to job template
+#   3. Enable "Prompt on launch" for Extra Variables
 #
 # Security advantages:
-#   - No static SSH keys stored in AAP
+#   - AppRole credentials stored in AAP credential store (encrypted)
+#   - No secrets in job logs or extra_vars
 #   - Keys exist only during playbook execution
-#   - Automatic credential rotation per run
 #   - Keys are shredded after use
 # =============================================================================
 
@@ -39,8 +46,11 @@
 
   vars:
     _target_list: "{{ target_hosts.split(',') | map('trim') | list }}"
-    _ssh_user: "{{ ssh_user | default('ansible') }}"
+    _ssh_user: "{{ ssh_user | default('ec2-user') }}"
     _vault_ssh_mount: "{{ vault_ssh_mount | default('ssh') }}"
+    # AppRole credentials from AAP Vault Credential (env vars) or extra_vars fallback
+    _vault_role_id: "{{ lookup('env', 'VAULT_ROLE_ID') | default(vault_approle_role_id, true) }}"
+    _vault_secret_id: "{{ lookup('env', 'VAULT_SECRET_ID') | default(vault_approle_secret_id, true) }}"
 
   tasks:
     - name: Validate required variables
@@ -48,13 +58,13 @@
         that:
           - target_hosts is defined and target_hosts | length > 0
           - vault_addr is defined
-          - vault_approle_role_id is defined
-          - vault_approle_secret_id is defined
           - vault_ssh_role is defined
+          - _vault_role_id | length > 0
+          - _vault_secret_id | length > 0
         fail_msg: >-
-          Missing required variables. Ensure Terraform passes all required
-          variables via extra_vars: target_hosts, vault_addr, vault_ssh_role,
-          vault_approle_role_id, vault_approle_secret_id.
+          Missing required variables. Ensure:
+          1. Terraform passes: target_hosts, vault_addr, vault_ssh_role
+          2. AAP Vault Credential provides: VAULT_ROLE_ID, VAULT_SECRET_ID
 
     - name: Set Vault namespace header
       ansible.builtin.set_fact:
@@ -67,10 +77,10 @@
         headers: "{{ _vault_headers }}"
         body_format: json
         body:
-          role_id: "{{ vault_approle_role_id }}"
-          secret_id: "{{ vault_approle_secret_id }}"
+          role_id: "{{ _vault_role_id }}"
+          secret_id: "{{ _vault_secret_id }}"
         status_code: 200
-        validate_certs: "{{ vault_validate_certs | default(true) }}"
+        validate_certs: "{{ vault_validate_certs | default(false) }}"
       register: vault_login
       no_log: true
 

@@ -1,20 +1,45 @@
-# -----------------------------------------------------------------------------
-# Providers
-# -----------------------------------------------------------------------------
+# Terraform Providers
+#
+# Required providers for AWS infrastructure, AAP integration, and Vault SSH CA.
 
+terraform {
+  required_version = ">= 1.14.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    aap = {
+      source = "ansible/aap"
+    }
+    vault = {
+      source  = "hashicorp/vault"
+      version = "~> 4.0"
+    }
+  }
+}
+
+# AWS Provider
 provider "aws" {
   region = var.aws_region
 }
 
-provider "vault" {
-  address   = var.vault_addr
-  token     = var.vault_token != "" ? var.vault_token : null
-  namespace = var.vault_namespace != "" ? var.vault_namespace : null
+# AAP Provider - connects to Ansible Automation Platform
+provider "aap" {
+  host     = var.aap_host
+  username = var.aap_username
+  password = var.aap_password
+
+  # Skip TLS verification for demo (use proper certs in production)
+  insecure_skip_verify = true
 }
 
-provider "aap" {
-  host                 = var.aap_host
-  username             = var.aap_username
-  password             = var.aap_password
-  insecure_skip_verify = true
+# Vault Provider - provisions SSH CA and AppRole if not exists
+provider "vault" {
+  address   = var.vault_addr
+  token     = var.vault_token
+  namespace = var.vault_namespace != "" ? var.vault_namespace : null
+
+  skip_tls_verify = true
 }

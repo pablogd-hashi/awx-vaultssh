@@ -29,7 +29,7 @@ variable "aap_job_template_id" {
 variable "ssh_user" {
   description = "SSH username"
   type        = string
-  default     = "ansible"
+  default     = "ec2-user"
 }
 
 # -----------------------------------------------------------------------------
